@@ -7,8 +7,8 @@ import requests
 from datetime import datetime
 
 # Function to fetch data from Binance API
-def fetch_data(symbol, interval, limit=2000):  # Updated limit to 2000
-    url = f"https://api.binance.us/api/v3/klines"
+def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
+    url = f"https://api.binance.com/api/v3/klines"
     params = {
         "symbol": symbol,
         "interval": interval,
@@ -29,6 +29,39 @@ def fetch_data(symbol, interval, limit=2000):  # Updated limit to 2000
     else:
         st.error("Failed to fetch data from Binance API.")
         return None
+
+# Function to fetch order book data from Binance API
+def fetch_order_book(symbol, limit=500):  # Default limit set to 500
+    url = "https://api.binance.com/api/v3/depth"
+    params = {
+        "symbol": symbol,
+        "limit": limit  # Number of bids/asks to fetch
+    }
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        st.error("Failed to fetch order book data from Binance API.")
+        return None
+
+# Function to calculate highest liquidity on upside and downside
+def calculate_highest_liquidity(order_book):
+    # Convert bids and asks to DataFrames
+    bids = pd.DataFrame(order_book['bids'], columns=['price', 'quantity'], dtype=float)  # Downside liquidity (buy orders)
+    asks = pd.DataFrame(order_book['asks'], columns=['price', 'quantity'], dtype=float)  # Upside liquidity (sell orders)
+
+    # Sort bids by price in descending order (highest bid first)
+    bids = bids.sort_values(by='price', ascending=False)
+    # Sort asks by price in ascending order (lowest ask first)
+    asks = asks.sort_values(by='price', ascending=True)
+
+    # Find the price level with the highest liquidity
+    downside_liquidity_price = bids.loc[bids['quantity'].idxmax(), 'price']  # Highest bid liquidity
+    downside_liquidity_amount = bids.loc[bids['quantity'].idxmax(), 'quantity']  # Liquidity amount for downside
+    upside_liquidity_price = asks.loc[asks['quantity'].idxmax(), 'price']   # Highest ask liquidity
+    upside_liquidity_amount = asks.loc[asks['quantity'].idxmax(), 'quantity']  # Liquidity amount for upside
+
+    return downside_liquidity_price, downside_liquidity_amount, upside_liquidity_price, upside_liquidity_amount
 
 # Function to calculate Fibonacci retracement levels
 def calculate_fibonacci(df):
@@ -176,8 +209,11 @@ def main():
     ])
     interval = st.selectbox("Select Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"])
 
-    # Fetch data
-    df = fetch_data(symbol, interval)
+    # Add a slider for the limit (default: 500)
+    limit = st.slider("Select Limit for Data Fetching", min_value=100, max_value=2000, value=500, step=100)
+
+    # Fetch candlestick data
+    df = fetch_data(symbol, interval, limit=limit)  # Pass the selected limit
     if df is not None:
         # Apply strategy
         df = apply_strategy(df)
@@ -210,8 +246,6 @@ def main():
         sentiment, sentiment_color = determine_sentiment(profitability)
         st.write(f"**Sentiment:** :{sentiment_color}[{sentiment}]")
 
-  
-
         # Calculate volatility
         volatility = calculate_volatility(df)
         st.write(f"**Volatility:** {volatility:.2f}%")
@@ -220,7 +254,14 @@ def main():
         volatility_interpretation = interpret_volatility(volatility)
         st.write(f"**Volatility Interpretation:** {volatility_interpretation}")
 
-  
+        # Fetch order book data
+        order_book = fetch_order_book(symbol, limit=limit)  # Pass the selected limit
+        if order_book:
+            # Calculate highest liquidity on upside and downside
+            downside_liquidity_price, downside_liquidity_amount, upside_liquidity_price, upside_liquidity_amount = calculate_highest_liquidity(order_book)
+            st.write("**Liquidity Analysis**")
+            st.write(f"**Highest Downside Liquidity Price (Bids):** {downside_liquidity_price:.4f} ({downside_liquidity_amount:.2f})")
+            st.write(f"**Highest Upside Liquidity Price (Asks):** {upside_liquidity_price:.4f} ({upside_liquidity_amount:.2f})")
 
         # Display candlestick chart with EMAs
         st.write("**Live Candlestick Chart**")
@@ -232,7 +273,7 @@ def main():
         profitability_dict = {}
 
         for tf in timeframes:
-            df_tf = fetch_data(symbol, tf)
+            df_tf = fetch_data(symbol, tf, limit=limit)  # Pass the selected limit
             if df_tf is not None:
                 df_tf = apply_strategy(df_tf)
                 profitability_dict[tf] = evaluate_profitability(df_tf)
