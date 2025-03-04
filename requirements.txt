@@ -16,6 +16,7 @@ gym
 seaborn
 mplfinance
 datetime
+load_dotenv
 
 
 
