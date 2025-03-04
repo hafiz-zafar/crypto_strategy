@@ -54,6 +54,28 @@ def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
         st.error("Failed to fetch data from Binance API.")
         return None
 
+# Function to format large numbers in K, M, B
+def format_volume(volume):
+    if volume >= 1_000_000_000:
+        return f"{volume / 1_000_000_000:.2f} B"  # Billions
+    elif volume >= 1_000_000:
+        return f"{volume / 1_000_000:.2f} M"  # Millions
+    elif volume >= 1_000:
+        return f"{volume / 1_000:.2f} K"  # Thousands
+    else:
+        return str(volume)  # No formatting needed if below 1,000
+    
+# Function to get the volume of a coin in USD from Binance
+def get_coin_volume(coin):
+    url = f'https://api.binance.com/api/v3/ticker/24hr?symbol={coin}USDT'
+    response = requests.get(url)
+    data = response.json()
+    
+    if 'error' in data:
+        return None
+    volume = data.get('quoteVolume', 'N/A')
+    return format_volume(float(volume))
+
 # Function to fetch order book data
 def fetch_order_book(symbol, limit=100):
     url = "https://api.binance.us/api/v3/depth"
@@ -302,6 +324,13 @@ def main():
             st.markdown(css, unsafe_allow_html=True)
             st.metric("**Support (S1)**", f"{df['S1'].iloc[-1]:.4f}")
 
+        # Fetch and display the volume in USD
+        if symbol:
+            volume = get_coin_volume(symbol.replace("USDT", ""))        
+            if volume:
+                st.markdown(f"<h5 style='color: blue; font-weight: bold;'>The 24h trading volume of {symbol} in USDT is: ${volume}</h5>", unsafe_allow_html=True)
+            else:
+                st.write("Couldn't fetch the volume. Please try again later.")
     
 
         # Display the latest signal
