@@ -28,7 +28,7 @@ def fetch_market_dominance():
 
 # Function to fetch data from Binance API
 def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
-    url = f"https://api-gcp.binance.com/api/v3/klines"
+    url = f"https://api.binance.us/api/v3/klines"
     params = {
         "symbol": symbol,
         "interval": interval,
@@ -52,7 +52,7 @@ def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
 
 # Function to fetch order book data
 def fetch_order_book(symbol, limit=100):
-    url = "https://api-gcp.binance.com/api/v3/depth"
+    url = "https://api.binance.us/api/v3/depth"
     params = {"symbol": symbol, "limit": limit}
     response = requests.get(url, params=params)
     if response.status_code == 200:
