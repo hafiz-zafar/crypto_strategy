@@ -6,9 +6,29 @@ import matplotlib.pyplot as plt
 import requests
 from datetime import datetime
 
+# CoinMarketCap API key (replace with your own API key)
+COINMARKETCAP_API_KEY = "e53652fe-973b-40c8-83aa-3610b7a6f0c6"
+
+# Function to fetch market dominance data from CoinMarketCap API
+def fetch_market_dominance():
+    url = "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
+    headers = {
+        "Accepts": "application/json",
+        "X-CMC_PRO_API_KEY": COINMARKETCAP_API_KEY
+    }
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        data = response.json()
+        btc_dominance = data['data']['btc_dominance']  # Bitcoin dominance in percentage
+        others_dominance = 100 - btc_dominance  # Others dominance in percentage
+        return btc_dominance, others_dominance
+    else:
+        st.error("Failed to fetch market dominance data from CoinMarketCap API.")
+        return None, None
+
 # Function to fetch data from Binance API
 def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
-    url = f"https://api.binance.us/api/v3/klines"
+    url = f"https://api-gcp.binance.com/api/v3/klines"
     params = {
         "symbol": symbol,
         "interval": interval,
@@ -30,38 +50,51 @@ def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
         st.error("Failed to fetch data from Binance API.")
         return None
 
-# Function to fetch order book data from Binance API
-def fetch_order_book(symbol, limit=500):  # Default limit set to 500
-    url = "https://api.binance.us/api/v3/depth"
-    params = {
-        "symbol": symbol,
-        "limit": limit  # Number of bids/asks to fetch
-    }
+# Function to fetch order book data
+def fetch_order_book(symbol, limit=100):
+    url = "https://api-gcp.binance.com/api/v3/depth"
+    params = {"symbol": symbol, "limit": limit}
     response = requests.get(url, params=params)
     if response.status_code == 200:
         return response.json()
     else:
-        st.error("Failed to fetch order book data from Binance API.")
+        print("Failed to fetch order book data.")
         return None
 
-# Function to calculate highest liquidity on upside and downside
-def calculate_highest_liquidity(order_book):
-    # Convert bids and asks to DataFrames
-    bids = pd.DataFrame(order_book['bids'], columns=['price', 'quantity'], dtype=float)  # Downside liquidity (buy orders)
-    asks = pd.DataFrame(order_book['asks'], columns=['price', 'quantity'], dtype=float)  # Upside liquidity (sell orders)
+# Function to calculate liquidity at different price levels
+def calculate_liquidity(order_book, depth_pct=0.1):
+    bids = pd.DataFrame(order_book['bids'], columns=['price', 'quantity'], dtype=float)
+    asks = pd.DataFrame(order_book['asks'], columns=['price', 'quantity'], dtype=float)
 
-    # Sort bids by price in descending order (highest bid first)
     bids = bids.sort_values(by='price', ascending=False)
-    # Sort asks by price in ascending order (lowest ask first)
     asks = asks.sort_values(by='price', ascending=True)
 
-    # Find the price level with the highest liquidity
-    downside_liquidity_price = bids.loc[bids['quantity'].idxmax(), 'price']  # Highest bid liquidity
-    downside_liquidity_amount = bids.loc[bids['quantity'].idxmax(), 'quantity']  # Liquidity amount for downside
-    upside_liquidity_price = asks.loc[asks['quantity'].idxmax(), 'price']   # Highest ask liquidity
-    upside_liquidity_amount = asks.loc[asks['quantity'].idxmax(), 'quantity']  # Liquidity amount for upside
+    # Calculate bid-ask spread
+    best_bid = bids['price'].iloc[0]
+    best_ask = asks['price'].iloc[0]
+    spread = best_ask - best_bid
 
-    return downside_liquidity_price, downside_liquidity_amount, upside_liquidity_price, upside_liquidity_amount
+    # Define price impact range
+    price_range_bid = best_bid * (1 - depth_pct)  # e.g., 10% below best bid
+    price_range_ask = best_ask * (1 + depth_pct)  # e.g., 10% above best ask
+
+    # Cumulative liquidity within price impact range
+    downside_liquidity_coin = bids[bids['price'] >= price_range_bid]['quantity'].sum()
+    upside_liquidity_coin = asks[asks['price'] <= price_range_ask]['quantity'].sum()
+
+    # Convert BTC liquidity to USD liquidity
+    downside_liquidity_usd = (bids[bids['price'] >= price_range_bid]['price'] * bids[bids['price'] >= price_range_bid]['quantity']).sum()
+    upside_liquidity_usd = (asks[asks['price'] <= price_range_ask]['price'] * asks[asks['price'] <= price_range_ask]['quantity']).sum()
+
+    return {
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "spread": spread,
+        "downside_liquidity_coin": downside_liquidity_coin,
+        "upside_liquidity_coin": upside_liquidity_coin,
+        "downside_liquidity_usd": downside_liquidity_usd,
+        "upside_liquidity_usd": upside_liquidity_usd
+    }
 
 # Function to calculate Fibonacci retracement levels
 def calculate_fibonacci(df):
@@ -194,86 +227,130 @@ def display_chart(df):
     )
     st.pyplot(fig)
 
+# Function to format numbers in M/K notation
+def format_number(value):
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.2f}M"  # Convert to millions
+    elif value >= 1_000:
+        return f"{value / 1_000:.2f}K"  # Convert to thousands
+    else:
+        return f"{value:.2f}"  # Keep normal format
+
 # Main Streamlit app
 def main():
-    st.title("Cryptocurrency Trading Strategy Analyzer")
-    st.write("This app fetches live cryptocurrency data from Binance, applies a trading strategy, and evaluates profitability.")
+    # Set page title and layout
+    st.set_page_config(page_title="Crypto Trading Dashboard", layout="wide")
 
-    # User inputs
-    symbol = st.selectbox("Select Coin", [
-        "BTCUSDT", "ETHUSDT", "XRPUSDT", "USUALUSDT", "XLMUSDT", "STXUSDT", "VELODROMEUSDT", 
-        "TIAUSDT", "IOTAUSDT", "THETAUSDT", "NEARUSDT", "HBARUSDT", "ADAUSDT", 
-        "MKRUSDT", "TRUMPUSDT", "DOGEUSDT", "FLOKIUSDT", "FILUSDT","SOLUSDT","SUIUSDT",
-        "QTUMUSDT","AVAXUSDT","DOTUSDT","FETUSDT","GALAUSDT","TRXUSDT","MANAUSDT","SANDUST",
-        "ARKMUSDT","POLUSDT","OCEANUSDT","LPTUSDT"
-    ])
-    interval = st.selectbox("Select Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"])
+    # Add a title and description
+    st.title("🚀 Cryptocurrency Trading Strategy Analyzer")
+    st.markdown("""
+        This app fetches live cryptocurrency data from Binance, applies a trading strategy, and evaluates profitability.
+        **Explore the market dynamics and make informed trading decisions!**
+    """)
 
-    # Add a slider for the limit (default: 500)
-    limit = st.slider("Select Limit for Data Fetching", min_value=100, max_value=2000, value=500, step=100)
+    # Fetch market dominance data
+    btc_dominance, others_dominance = fetch_market_dominance()
+    if btc_dominance is not None and others_dominance is not None:
+        # Display market dominance in columns
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("**Bitcoin Dominance (BTC.D)**", f"{btc_dominance:.2f}%")
+        with col2:
+            st.metric("**Others Dominance (OTHER.D)**", f"{others_dominance:.2f}%")
+
+    # Add a divider
+    st.markdown("---")
+
+    # User inputs in a sidebar
+    with st.sidebar:
+        st.header("⚙️ Settings")
+        symbol = st.selectbox("Select Coin", [
+            "BTCUSDT", "ETHUSDT", "XRPUSDT", "USUALUSDT", "XLMUSDT", "STXUSDT", "VELODROMEUSDT", 
+            "TIAUSDT", "IOTAUSDT", "THETAUSDT", "NEARUSDT", "HBARUSDT", "ADAUSDT", 
+            "MKRUSDT", "TRUMPUSDT", "DOGEUSDT", "FLOKIUSDT", "FILUSDT","SOLUSDT","SUIUSDT",
+            "QTUMUSDT","AVAXUSDT","DOTUSDT","FETUSDT","GALAUSDT","TRXUSDT","MANAUSDT","SANDUST",
+            "ARKMUSDT","POLUSDT","OCEANUSDT","LPTUSDT"
+        ])
+        interval = st.selectbox("Select Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],index=2)
+        limit = st.slider("Select Limit for Data Fetching", min_value=100, max_value=2000, value=500, step=100)
 
     # Fetch candlestick data
-    df = fetch_data(symbol, interval, limit=limit)  # Pass the selected limit
+    df = fetch_data(symbol, interval, limit=limit)
     if df is not None:
         # Apply strategy
         df = apply_strategy(df)
 
         # Calculate support and resistance levels
         df = calculate_support_resistance(df)
+        css = """
+        <style>
+        [data-testid="stMetricValue"] {
+            color: gray;
+        }
+        </style>"""
+        # Display key metrics in columns
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("**Current Price**", f"{df['close'].iloc[-1]:.4f}")
+        with col2:
+            st.metric("**Resistance (R1)**", f"{df['R1'].iloc[-1]:.4f}")
+        with col3:
+            st.markdown(css, unsafe_allow_html=True)
+            st.metric("**Support (S1)**", f"{df['S1'].iloc[-1]:.4f}")
 
-        # Display support and resistance levels
-        st.write("**Support and Resistance Levels**")
-        st.write(f"**Resistance (R1):** {df['R1'].iloc[-1]:.4f}")
-        st.write(f"**Support (S1):** {df['S1'].iloc[-1]:.4f}")
+    
 
-        # Display current price
-        current_price = df['close'].iloc[-1]
-        st.write(f"**Current Price:** {current_price:.4f}")
-
-        # Get the latest signal
+        # Display the latest signal
         latest_signal = df['signal'].iloc[-1]
         signal_text = "Buy" if latest_signal == 1 else "Sell" if latest_signal == -1 else "Hold"
         signal_color = "green" if latest_signal == 1 else "red" if latest_signal == -1 else "gray"
-
-        # Display the latest signal
-        st.write(f"**Latest Signal:** :{signal_color}[{signal_text}]")
+        st.markdown(f"**Latest Signal:** :{signal_color}[{signal_text}]")
 
         # Evaluate profitability
         profitability = evaluate_profitability(df)
-        st.write(f"**Profitability:** {profitability:.2f}%")
-
-        # Determine sentiment
         sentiment, sentiment_color = determine_sentiment(profitability)
-        st.write(f"**Sentiment:** :{sentiment_color}[{sentiment}]")
+        st.markdown(f"**Profitability:** {profitability:.2f}%")
+        st.markdown(f"**Sentiment:** :{sentiment_color}[{sentiment}]")
 
         # Calculate volatility
         volatility = calculate_volatility(df)
-        st.write(f"**Volatility:** {volatility:.2f}%")
-
-        # Interpret volatility
         volatility_interpretation = interpret_volatility(volatility)
-        st.write(f"**Volatility Interpretation:** {volatility_interpretation}")
+        st.markdown(f"**Volatility:** {volatility:.2f}%")
+        st.markdown(f"**Volatility Interpretation:** {volatility_interpretation}")
 
         # Fetch order book data
-        order_book = fetch_order_book(symbol, limit=limit)  # Pass the selected limit
+        order_book = fetch_order_book(symbol, limit=limit)
         if order_book:
             # Calculate highest liquidity on upside and downside
-            downside_liquidity_price, downside_liquidity_amount, upside_liquidity_price, upside_liquidity_amount = calculate_highest_liquidity(order_book)
-            st.write("**Liquidity Analysis**")
-            st.write(f"**Highest Downside Liquidity Price (Bids):** {downside_liquidity_price:.4f} ({downside_liquidity_amount:.2f})")
-            st.write(f"**Highest Upside Liquidity Price (Asks):** {upside_liquidity_price:.4f} ({upside_liquidity_amount:.2f})")
+            liquidity_data= calculate_liquidity(order_book)
+            st.markdown("**Liquidity Analysis**")
+            if liquidity_data:
+                # Display results in two columns
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.metric("Downside Liquidity Coin", f"{liquidity_data['downside_liquidity_coin']:.2f}")
+                    st.metric("Downside Liquidity USD", f"{format_number(liquidity_data['downside_liquidity_usd'])}")
+
+                with col2:
+                    st.metric("Upside Liquidity Coin", f"{liquidity_data['upside_liquidity_coin']:.2f}")
+                    st.metric("Upside Liquidity USD", f"{format_number(liquidity_data['upside_liquidity_usd'])}")
+
+                
+
+            
 
         # Display candlestick chart with EMAs
-        st.write("**Live Candlestick Chart**")
+        st.markdown("**Live Candlestick Chart**")
         display_chart(df)
 
         # Evaluate best timeframe
-        st.write("**Evaluating Best Timeframe for Trading**")
+        st.markdown("**Evaluating Best Timeframe for Trading**")
         timeframes = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
         profitability_dict = {}
 
         for tf in timeframes:
-            df_tf = fetch_data(symbol, tf, limit=limit)  # Pass the selected limit
+            df_tf = fetch_data(symbol, tf, limit=limit)
             if df_tf is not None:
                 df_tf = apply_strategy(df_tf)
                 profitability_dict[tf] = evaluate_profitability(df_tf)
@@ -281,8 +358,8 @@ def main():
         if profitability_dict:
             best_timeframe = max(profitability_dict, key=profitability_dict.get)
             best_profitability = profitability_dict[best_timeframe]
-            st.write(f"**Best Timeframe for Trading:** {best_timeframe}")
-            st.write(f"**Profitability for Best Timeframe:** {best_profitability:.2f}%")
+            st.markdown(f"**Best Timeframe for Trading:** {best_timeframe}")
+            st.markdown(f"**Profitability for Best Timeframe:** {best_profitability:.2f}%")
 
 # Run the app
 if __name__ == "__main__":
