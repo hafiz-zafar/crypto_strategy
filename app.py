@@ -5,9 +5,13 @@ import mplfinance as mpf
 import matplotlib.pyplot as plt
 import requests
 from datetime import datetime
+from dotenv import load_dotenv
+import os
 
 # CoinMarketCap API key (replace with your own API key)
-COINMARKETCAP_API_KEY = "e53652fe-973b-40c8-83aa-3610b7a6f0c6"
+load_dotenv()
+API_KEY = os.getenv("COINMARKETCAP_API_KEY")
+COINMARKETCAP_API_KEY = API_KEY
 
 # Function to fetch market dominance data from CoinMarketCap API
 def fetch_market_dominance():
