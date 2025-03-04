@@ -67,14 +67,17 @@ def format_volume(volume):
     
 # Function to get the volume of a coin in USD from Binance
 def get_coin_volume(coin):
-    url = f'https://api.binance.com/api/v3/ticker/24hr?symbol={coin}USDT'
+    url = f'https://api.binance.us/api/v3/ticker/24hr?symbol={coin}USDT'
     response = requests.get(url)
     data = response.json()
     
     if 'error' in data:
         return None
     volume = data.get('quoteVolume', 'N/A')
-    return format_volume(float(volume))
+    if(volume!='N/A'):
+        return format_volume(float(volume))
+    else:    
+        return format_volume(volume)
 
 # Function to fetch order book data
 def fetch_order_book(symbol, limit=100):
