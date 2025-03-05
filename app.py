@@ -177,6 +177,29 @@ def calculate_support_resistance(df):
 
 # Function to apply trading strategy
 
+
+import pandas as pd
+import pandas_ta as ta
+
+def calculate_dynamic_fibonacci(df):
+    """Calculate dynamic Fibonacci levels based on high and low prices."""
+    # Calculate high and low over the period (can be adjusted)
+    high_price = df['high'].max()
+    low_price = df['low'].min()
+    
+    # Calculate the range
+    price_range = high_price - low_price
+    
+    # Calculate Fibonacci levels
+    fib_236 = low_price + 0.236 * price_range  # 23.6% Fibonacci level
+    fib_382 = low_price + 0.382 * price_range  # 38.2% Fibonacci level
+    fib_50 = low_price + 0.5 * price_range  # 50% Fibonacci level
+    fib_618 = low_price + 0.618 * price_range  # 61.8% Fibonacci level
+    fib_100 = high_price  # 100% Fibonacci level
+    
+    return fib_236, fib_382, fib_50, fib_618, fib_100
+
+
 def apply_strategy(df, ema_lengths=[9, 21, 50], macd_params=(6, 13, 5)):
     # Calculate technical indicators
     df.ta.ema(length=ema_lengths[0], append=True)
@@ -218,7 +241,39 @@ def apply_strategy(df, ema_lengths=[9, 21, 50], macd_params=(6, 13, 5)):
 
     # Add confirmation candle
     df['confirmed_signal'] = df['signal'].shift(1)
+
+    # Initialize SL and TP columns
+    df['stop_loss'] = 0.0
+    df['take_profit'] = 0.0
+
+    # Track position and calculate SL/TP
+    in_position = False
+    entry_price = 0.0
+
+    for i in range(1, len(df)):
+        if not in_position:
+            if df['confirmed_signal'].iloc[i] == 1:  # Buy signal
+                entry_price = df['close'].iloc[i]
+                df.at[df.index[i], 'stop_loss'] = entry_price * 0.99  # 1% SL
+                df.at[df.index[i], 'take_profit'] = entry_price * 1.03  # 2% TP
+                in_position = True
+            elif df['confirmed_signal'].iloc[i] == -1:  # Sell signal
+                entry_price = df['close'].iloc[i]
+                df.at[df.index[i], 'stop_loss'] = entry_price * 1.01  # 1% SL
+                df.at[df.index[i], 'take_profit'] = entry_price * 0.97  # 2% TP
+                in_position = True
+        else:
+            if df['confirmed_signal'].iloc[i] == 1:  # Already in a long position
+                if df['close'].iloc[i] <= df['stop_loss'].iloc[i] or df['close'].iloc[i] >= df['take_profit'].iloc[i]:
+                    df.at[df.index[i], 'signal'] = 0  # Exit position
+                    in_position = False
+            elif df['confirmed_signal'].iloc[i] == -1:  # Already in a short position
+                if df['close'].iloc[i] >= df['stop_loss'].iloc[i] or df['close'].iloc[i] <= df['take_profit'].iloc[i]:
+                    df.at[df.index[i], 'signal'] = 0  # Exit position
+                    in_position = False
+
     return df
+
 
 # Function to calculate Fibonacci retracement levels
 def calculate_fibonacci(df, window=50):
@@ -455,7 +510,7 @@ def format_number(value):
         return f"{value / 1_000:.2f}K"  # Convert to thousands
     else:
         return f"{value:.2f}"  # Keep normal format
-    
+
 
 # GRU MODEL TRAINING STARTS HERE
 
