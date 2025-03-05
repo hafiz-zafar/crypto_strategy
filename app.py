@@ -199,8 +199,8 @@ def apply_strategy(df, ema_lengths=[9, 21, 50], macd_params=(6, 13, 5)):
         (df['EMA_9'] > df['EMA_21']) & (df['EMA_21'] > df['EMA_50']) &  # EMA condition
         (df['MACD_6_13_5'] > df['MACDs_6_13_5']) &  # MACD condition
         (df['close'] > df['fib_50']) &  # Fibonacci condition
-        (df['RSI_14'] > 60) &  # RSI condition
-        (df['ADX_14'] > 25) &  # ADX condition
+        (df['RSI_14'] > 50) &  # RSI condition
+        (df['ADX_14'] > 20) &  # ADX condition
         (df['volume'] > df['volume_ma']),  # Volume condition
         'signal'
     ] = 1
@@ -211,7 +211,7 @@ def apply_strategy(df, ema_lengths=[9, 21, 50], macd_params=(6, 13, 5)):
         (df['MACD_6_13_5'] < df['MACDs_6_13_5']) &  # MACD condition
         (df['close'] < df['fib_382']) &  # Fibonacci condition
         (df['RSI_14'] < 40) &  # RSI condition
-        (df['ADX_14'] > 25) &  # ADX condition
+        (df['ADX_14'] > 20) &  # ADX condition
         (df['volume'] > df['volume_ma']),  # Volume condition
         'signal'
     ] = -1
