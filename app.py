@@ -79,7 +79,7 @@ def fetch_fear_greed_index():
 
 # Function to fetch data from Binance API
 def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
-    url = f"https://api.binance.us/api/v3/klines"
+    url = f"https://api.binance.com/api/v3/klines"
     params = {
         "symbol": symbol,
         "interval": interval,
@@ -103,7 +103,7 @@ def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
 
 # Function to fetch order book data
 def fetch_order_book(symbol, limit=500):
-    url = "https://api.binance.us/api/v3/depth"
+    url = "https://api.binance.com/api/v3/depth"
     params = {"symbol": symbol, "limit": limit}
     response = requests.get(url, params=params)
     if response.status_code == 200:
@@ -254,7 +254,6 @@ def backtest_strategy(df):
     
     return df
 
-import pandas as pd
 
 def calculate_metrics(df):
     """
@@ -712,8 +711,9 @@ def main():
                 col1, col2,col3 = st.columns(3)
 
                 with col1:
-                    st.metric("Downside Liquidity Coin", f"{liquidity_data['downside_liquidity_coin']:.2f}")
                     st.metric("Upside Liquidity Coin", f"{liquidity_data['upside_liquidity_coin']:.2f}")
+                    st.metric("Downside Liquidity Coin", f"{liquidity_data['downside_liquidity_coin']:.2f}")
+                    
                     
                 with col2: 
                     st.metric("Upside Liquidity USD", f"{format_number(liquidity_data['upside_liquidity_usd'])}")
