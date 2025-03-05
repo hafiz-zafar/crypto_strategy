@@ -7,6 +7,16 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 import os
+import tensorflow as tf
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import GRU, Dense, Dropout
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.callbacks import EarlyStopping
+import time
+import joblib
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import numpy as np
 
 # CoinMarketCap API key (replace with your own API key)
 load_dotenv()
@@ -29,6 +39,43 @@ def fetch_market_dominance():
     else:
         st.error("Failed to fetch market dominance data from CoinMarketCap API.")
         return None, None
+
+def fetch_24h_volume(symbol):
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    headers = {
+        "Accepts": "application/json",
+        "X-CMC_PRO_API_KEY": COINMARKETCAP_API_KEY
+    }
+    params = {"symbol": symbol.upper()}  # Ensure uppercase symbol
+    response = requests.get(url, headers=headers, params=params)
+    
+    if response.status_code == 200:
+        data = response.json()
+        if symbol.upper() in data["data"]:
+            volume_24h = data["data"][symbol.upper()]["quote"]["USD"]["volume_24h"]
+            return format_volume(volume_24h)
+        else:
+            st.warning("Symbol not found in response.")
+            return None
+    else:
+        st.error("Failed to fetch data from CoinMarketCap API.")
+        return None
+
+def fetch_fear_greed_index():
+    """Fetches the market's overall Fear & Greed index with text and value"""
+    url = "https://api.alternative.me/fng/"
+    
+    response = requests.get(url)
+    
+    if response.status_code == 200:
+        data = response.json()
+        fear_greed_value = data['data'][0]['value']  # Numeric value
+        fear_greed_text = data['data'][0]['value_classification']  # Text (e.g., Fear, Greed, Neutral)
+
+        return f"{fear_greed_text} ({fear_greed_value})"
+    else:
+        st.error("Failed to fetch Fear & Greed Index.")
+        return None
 
 # Function to fetch data from Binance API
 def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
@@ -54,33 +101,8 @@ def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
         st.error("Failed to fetch data from Binance API.")
         return None
 
-# Function to format large numbers in K, M, B
-def format_volume(volume):
-    if volume >= 1_000_000_000:
-        return f"{volume / 1_000_000_000:.2f} B"  # Billions
-    elif volume >= 1_000_000:
-        return f"{volume / 1_000_000:.2f} M"  # Millions
-    elif volume >= 1_000:
-        return f"{volume / 1_000:.2f} K"  # Thousands
-    else:
-        return str(volume)  # No formatting needed if below 1,000
-    
-# Function to get the volume of a coin in USD from Binance
-def get_coin_volume(coin):
-    url = f'https://api.binance.us/api/v3/ticker/24hr?symbol={coin}USDT'
-    response = requests.get(url)
-    data = response.json()
-    
-    if 'error' in data:
-        return None
-    volume = data.get('quoteVolume', 'N/A')
-    if(volume!='N/A'):
-        return format_volume(float(volume))
-    else:    
-        return format_volume(volume)
-
 # Function to fetch order book data
-def fetch_order_book(symbol, limit=100):
+def fetch_order_book(symbol, limit=500):
     url = "https://api.binance.us/api/v3/depth"
     params = {"symbol": symbol, "limit": limit}
     response = requests.get(url, params=params)
@@ -115,6 +137,23 @@ def calculate_liquidity(order_book, depth_pct=0.1):
     downside_liquidity_usd = (bids[bids['price'] >= price_range_bid]['price'] * bids[bids['price'] >= price_range_bid]['quantity']).sum()
     upside_liquidity_usd = (asks[asks['price'] <= price_range_ask]['price'] * asks[asks['price'] <= price_range_ask]['quantity']).sum()
 
+    # Liquidity Price
+    cumulative_bid_liquidity = 0
+    downside_price = best_bid
+    for _, row in bids.iterrows():
+        if row['price'] < price_range_bid:
+            break
+        cumulative_bid_liquidity += row['quantity'] * row['price']
+        downside_price = row['price']
+    
+    cumulative_ask_liquidity = 0
+    upside_price = best_ask
+    for _, row in asks.iterrows():
+        if row['price'] > price_range_ask:
+            break
+        cumulative_ask_liquidity += row['quantity'] * row['price']
+        upside_price = row['price']
+
     return {
         "best_bid": best_bid,
         "best_ask": best_ask,
@@ -122,16 +161,11 @@ def calculate_liquidity(order_book, depth_pct=0.1):
         "downside_liquidity_coin": downside_liquidity_coin,
         "upside_liquidity_coin": upside_liquidity_coin,
         "downside_liquidity_usd": downside_liquidity_usd,
-        "upside_liquidity_usd": upside_liquidity_usd
+        "upside_liquidity_usd": upside_liquidity_usd,
+        "downside_price": downside_price,
+        "upside_price": upside_price
     }
 
-# Function to calculate Fibonacci retracement levels
-def calculate_fibonacci(df):
-    # Calculate Fibonacci retracement levels (38.2%, 50%, 61.8%)
-    df['fib_382'] = df['close'].rolling(window=20).apply(lambda x: x.max() - (x.max() - x.min()) * 0.382)
-    df['fib_50'] = df['close'].rolling(window=20).apply(lambda x: x.max() - (x.max() - x.min()) * 0.5)
-    df['fib_618'] = df['close'].rolling(window=20).apply(lambda x: x.max() - (x.max() - x.min()) * 0.618)
-    return df
 
 # Function to calculate support and resistance levels
 def calculate_support_resistance(df):
@@ -141,48 +175,206 @@ def calculate_support_resistance(df):
     df['S1'] = df['low'].rolling(window=20).min()
     return df
 
-# Function to determine sentiment based on profitability
-def determine_sentiment(profitability):
-    if profitability > 10:  # High profitability
-        return "Greed", "green"
-    elif profitability > -10:  # Moderate profitability
-        return "Neutral", "gray"
-    else:  # Low profitability
-        return "Fear", "red"
-
 # Function to apply trading strategy
-def apply_strategy(df):
-    # Calculate technical indicators using pandas_ta
-    df.ta.ema(length=20, append=True)  # 20-period EMA
-    df.ta.ema(length=50, append=True)  # 50-period EMA
-    df.ta.ema(length=100, append=True)  # 100-period EMA
-    df.ta.macd(fast=12, slow=26, signal=9, append=True)  # MACD
+
+def apply_strategy(df, ema_lengths=[9, 21, 50], macd_params=(6, 13, 5)):
+    # Calculate technical indicators
+    df.ta.ema(length=ema_lengths[0], append=True)
+    df.ta.ema(length=ema_lengths[1], append=True)
+    df.ta.ema(length=ema_lengths[2], append=True)
+    df.ta.macd(fast=macd_params[0], slow=macd_params[1], signal=macd_params[2], append=True)
+    df.ta.rsi(length=14, append=True)
+    df.ta.adx(length=14, append=True)
+    df.ta.atr(length=14, append=True)
+    df['volume_ma'] = df['volume'].rolling(window=20).mean()
 
     # Calculate Fibonacci retracement levels
     df = calculate_fibonacci(df)
 
     # Generate buy/sell signals
     df['signal'] = 0
-    # Buy signal: EMA(20) > EMA(50) > EMA(100) and (MACD > MACD Signal or Close > Fibonacci 61.8%)
+
+    # Buy signal: EMA(9) > EMA(21) > EMA(50), MACD > MACD Signal, Close > Fibonacci 50%, RSI > 60, ADX > 25, Volume > MA
     df.loc[
-        (df['EMA_20'] > df['EMA_50']) & (df['EMA_50'] > df['EMA_100']) &  # EMA condition
-        (
-            (df['MACD_12_26_9'] > df['MACDs_12_26_9']) |  # MACD condition
-            (df['close'] > df['fib_618'])  # Fibonacci condition
-        ),
+        (df['EMA_9'] > df['EMA_21']) & (df['EMA_21'] > df['EMA_50']) &  # EMA condition
+        (df['MACD_6_13_5'] > df['MACDs_6_13_5']) &  # MACD condition
+        (df['close'] > df['fib_50']) &  # Fibonacci condition
+        (df['RSI_14'] > 60) &  # RSI condition
+        (df['ADX_14'] > 25) &  # ADX condition
+        (df['volume'] > df['volume_ma']),  # Volume condition
         'signal'
     ] = 1
-    # Sell signal: EMA(20) < EMA(50) < EMA(100) and (MACD < MACD Signal or Close < Fibonacci 38.2%)
+
+    # Sell signal: EMA(9) < EMA(21) < EMA(50), MACD < MACD Signal, Close < Fibonacci 38.2%, RSI < 40, ADX > 25, Volume > MA
     df.loc[
-        (df['EMA_20'] < df['EMA_50']) & (df['EMA_50'] < df['EMA_100']) &  # EMA condition
-        (
-            (df['MACD_12_26_9'] < df['MACDs_12_26_9']) |  # MACD condition
-            (df['close'] < df['fib_382'])  # Fibonacci condition
-        ),
+        (df['EMA_9'] < df['EMA_21']) & (df['EMA_21'] < df['EMA_50']) &  # EMA condition
+        (df['MACD_6_13_5'] < df['MACDs_6_13_5']) &  # MACD condition
+        (df['close'] < df['fib_382']) &  # Fibonacci condition
+        (df['RSI_14'] < 40) &  # RSI condition
+        (df['ADX_14'] > 25) &  # ADX condition
+        (df['volume'] > df['volume_ma']),  # Volume condition
         'signal'
     ] = -1
 
+    # Add confirmation candle
+    df['confirmed_signal'] = df['signal'].shift(1)
     return df
+
+# Function to calculate Fibonacci retracement levels
+def calculate_fibonacci(df, window=50):
+    """
+    Calculate Fibonacci retracement levels (38.2%, 50%, 61.8%) based on rolling high and low.
+    """
+    try:
+        df['high_max'] = df['high'].rolling(window=window).max()
+        df['low_min'] = df['low'].rolling(window=window).min()
+        df['fib_382'] = df['high_max'] - (df['high_max'] - df['low_min']) * 0.382
+        df['fib_50'] = df['high_max'] - (df['high_max'] - df['low_min']) * 0.5
+        df['fib_618'] = df['high_max'] - (df['high_max'] - df['low_min']) * 0.618
+    except Exception as e:
+        print(f"Error calculating Fibonacci levels: {e}")
+    return df
+
+
+# here code starts
+# Function to backtest the strategy
+def backtest_strategy(df):
+    """
+    Backtest the strategy and calculate cumulative returns.
+    """
+    # Calculate daily returns
+    df['returns'] = df['close'].pct_change()
+
+
+    # Calculate strategy returns based on signals
+    df['strategy_returns'] = df['signal'].shift(1) * df['returns']
+   
+    # Calculate cumulative returns
+    df['cumulative_returns'] = (1 + df['strategy_returns']).cumprod()
+    
+    return df
+
+import pandas as pd
+
+def calculate_metrics(df):
+    """
+    Calculate performance metrics like win rate, risk-reward ratio, max drawdown,
+    long/short trades, positive/negative trades, profit factor, and date range.
+    """
+    # Total trades
+    total_trades = df['signal'].abs().sum()
+
+    # Long trades (buy signals)
+    long_trades = df[df['signal'] == 1]['signal'].count()
+
+    # Short trades (sell signals)
+    short_trades = df[df['signal'] == -1]['signal'].abs().count()
+
+    # Winning trades (positive returns)
+    winning_trades = df[df['strategy_returns'] > 0]['strategy_returns'].count()
+
+    # Losing trades (negative returns)
+    losing_trades = df[df['strategy_returns'] < 0]['strategy_returns'].count()
+
+    # Win rate
+    win_rate = winning_trades / total_trades if total_trades > 0 else 0
+
+    # Risk-reward ratio
+    avg_gain = df[df['strategy_returns'] > 0]['strategy_returns'].mean()
+    avg_loss = df[df['strategy_returns'] < 0]['strategy_returns'].mean()
+    risk_reward_ratio = abs(avg_gain / avg_loss) if avg_loss != 0 else 0
+
+    # Maximum drawdown
+    df['cumulative_max'] = df['cumulative_returns'].cummax()
+    df['drawdown'] = df['cumulative_returns'] - df['cumulative_max']
+    max_drawdown = df['drawdown'].min()
+
+    # Profit factor
+    gross_profit = df[df['strategy_returns'] > 0]['strategy_returns'].sum()
+    gross_loss = df[df['strategy_returns'] < 0]['strategy_returns'].sum()
+    profit_factor = abs(gross_profit / gross_loss) if gross_loss != 0 else 0
+
+    # Date range and number of days
+    start_date = df.index[0]  # First date in the dataset
+    end_date = df.index[-1]  # Last date in the dataset
+    num_days = (end_date - start_date).days  # Number of days
+
+    
+      # Create a list for the metrics to display
+    metrics = [
+        ("Total Trades", total_trades),
+        ("Long Trades", long_trades),
+        ("Short Trades", short_trades),
+        ("Positive Trades", winning_trades),
+        ("Negative Trades", losing_trades),
+        ("Win Rate", f"{win_rate:.2%}"),
+        ("Risk-Reward Ratio", risk_reward_ratio),
+        ("Profit Factor", profit_factor),     
+        ("Start Date", start_date.strftime('%Y-%m-%d')),
+        ("End Date", end_date.strftime('%Y-%m-%d')),
+        ("Maximum Drawdown", f"{max_drawdown:.2%}"),
+        ("Number of Days", num_days)
+    ]
+    
+# Using markdown with HTML to create a table with vertical and horizontal lines
+    st.markdown("### Strategy Performance")
+       # Create 6 columns to organize the data better
+    col1, col2, col3, col4, col5, col6 = st.columns(6)  # 6 columns
+
+    # Assigning values to columns
+    with col1:
+        st.write("Total Trades")
+        st.write("Long Trades")
+        st.write("Short Trades")
+        st.write("Positive Trades")
+        st.write("Negative Trades")
+        
+    with col2:
+        st.write(total_trades)
+        st.write(long_trades)
+        st.write(short_trades)
+        st.write(winning_trades)
+        st.write(losing_trades)
+
+    with col3:
+        st.write("Win Rate")
+        st.write("Risk-Reward Ratio")
+        st.write("Profit Factor")
+        st.write("Start Date")
+        st.write("End Date")
+       
+        
+    with col4:
+        st.write(f"{win_rate:.2%}")
+        st.write(risk_reward_ratio)
+        st.write(profit_factor)
+        st.write(start_date.strftime('%Y-%m-%d'))
+        st.write(end_date.strftime('%Y-%m-%d'))       
+        
+
+    with col5:        
+        st.write("Maximum Drawdown")
+        st.write("Number of Days")
+        
+    with col6:
+        st.write(f"{max_drawdown:.2%}")
+        st.write(num_days)
+# Main function to run the strategy
+def run_strategy(df):
+    """
+    Run the strategy, backtest, and visualize results.
+    """
+    # Apply strategy
+    df = apply_strategy(df)
+
+    # Backtest strategy
+    df = backtest_strategy(df)
+
+    # Calculate performance metrics
+    calculate_metrics(df)
+
+    return df
+#here code ends
 
 # Function to evaluate profitability
 def evaluate_profitability(df):
@@ -240,9 +432,9 @@ def evaluate_market_conditions(volatility, manipulation_detected):
 def display_chart(df):
     # Add EMAs to the chart
     apds = [
-        mpf.make_addplot(df['EMA_20'], color='yellow', width=1, panel=0),  # EMA 20 (Yellow)
-        mpf.make_addplot(df['EMA_50'], color='green', width=1, panel=0),  # EMA 50 (Green)
-        mpf.make_addplot(df['EMA_100'], color='blue', width=1, panel=0),  # EMA 100 (Blue)
+        mpf.make_addplot(df['EMA_9'], color='yellow', width=1, panel=0),  # EMA 20 (Yellow)
+        mpf.make_addplot(df['EMA_21'], color='green', width=1, panel=0),  # EMA 50 (Green)
+        mpf.make_addplot(df['EMA_50'], color='blue', width=1, panel=0),  # EMA 100 (Blue)
     ]
 
     # Create a figure and axis for the candlestick chart
@@ -264,6 +456,135 @@ def format_number(value):
         return f"{value / 1_000:.2f}K"  # Convert to thousands
     else:
         return f"{value:.2f}"  # Keep normal format
+    
+
+# GRU MODEL TRAINING STARTS HERE
+
+# ## Prepare Data
+
+def prepare_data(df, time_steps=20):
+    if len(df) <= time_steps:
+        raise ValueError(f"Dataset too small for time_steps={time_steps}. Needs at least {time_steps + 1} rows.")
+    
+    scaler = MinMaxScaler()
+    df_scaled = scaler.fit_transform(df)
+    
+    X, y = [], []
+    for i in range(len(df_scaled) - time_steps):
+        X.append(df_scaled[i:i + time_steps])
+        y.append(df_scaled[i + time_steps, 0])  # Select only the 'close' column
+    
+   
+    X = np.array(X)
+    y = np.array(y).reshape(-1, 1)  # Reshape to (samples, 1)
+    return X, y, scaler
+
+# ## Build GRU Model
+
+def build_gru_model(input_shape):
+    model = Sequential([
+        GRU(50, return_sequences=True, input_shape=input_shape, kernel_regularizer=l2(0.01)),
+        Dropout(0.2),
+        GRU(50, return_sequences=False, kernel_regularizer=l2(0.01)),
+        Dropout(0.2),
+        Dense(25),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    return model
+
+# ## Train and Save Model for Multiple Coins and Intervals
+
+def train_and_save_model(symbols, intervals, epochs=100, batch_size=16, time_steps=20, model_filename="crypto_gru_model.h5"):
+    combined_data = []
+    
+    for symbol in symbols:
+        for interval in intervals:
+            print(f"Fetching data for {symbol} at {interval} interval...")
+            df = fetch_data(symbol, interval,limit=500)
+            if df is None:
+                continue
+            combined_data.append(df)
+    
+    if not combined_data:
+        print("No data fetched for the specified symbols and intervals.")
+        return None
+    
+    # Combine all dataframes into a single one
+    combined_df = pd.concat(combined_data, axis=0)
+    
+    # Prepare the data
+    X, y, scaler = prepare_data(combined_df, time_steps)
+    train_size = int(len(X) * 0.8)
+    X_train, y_train = X[:train_size], y[:train_size]
+    X_test, y_test = X[train_size:], y[train_size:]
+    
+    model = build_gru_model((X.shape[1], X.shape[2]))
+    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+    
+    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(
+        model_filename, monitor='val_loss', save_best_only=True, mode='min', verbose=1
+    )
+    
+    model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=epochs, batch_size=batch_size,
+              callbacks=[early_stopping, model_checkpoint])
+    
+    # Load the best model after training finishes
+    model = load_model(model_filename)
+    
+    model.save(model_filename)
+    scaler_filename = model_filename.replace(".h5", "_scaler.pkl")
+    joblib.dump(scaler, scaler_filename)
+    print(f"Model saved as {model_filename}, Scaler saved as {scaler_filename}")
+    return model_filename, scaler_filename
+# GRU MODEL TRAINING ENDS HERE
+
+# ## Predict Price
+def predict_price(model_filename, scaler_filename, symbol, interval, time_steps=20):
+    print(f"Fetching latest data for {symbol} at {interval} interval...")
+
+    df = fetch_data(symbol, interval, limit=time_steps)
+    if df is None or len(df) < time_steps:
+        print("Not enough data for prediction.")
+        return None
+
+    # Load the model & scaler
+    model = load_model(model_filename)
+    scaler = joblib.load(scaler_filename)
+
+    # Prepare input data
+    df_scaled = scaler.transform(df)  # Ensure shape is (time_steps, num_features)
+    
+    num_features = df_scaled.shape[1]  # Dynamically get the number of features
+    X_input = df_scaled.reshape(1, time_steps, num_features)  # Shape: (1, 20, num_features)
+
+    # Make prediction
+    predicted_scaled = model.predict(X_input)  # Ensure shape: (1, num_features) or (1, 1)
+
+    # Ensure correct shape before inverse scaling
+    if predicted_scaled.shape[1] != num_features:
+        predicted_scaled = np.tile(predicted_scaled, (1, num_features))  # Repeat for missing features
+
+    # Convert back to original scale
+    predicted_price = scaler.inverse_transform(predicted_scaled)[0][0]
+    
+    return predicted_price
+
+# Function to format large numbers in K, M, B
+def format_volume(volume):
+    volume = float(volume)  # Ensure the volume is a float
+    if volume >= 1_000_000_000:
+        return f"{volume / 1_000_000_000:.2f} B"  # Billions
+    elif volume >= 1_000_000:
+        return f"{volume / 1_000_000:.2f} M"  # Millions
+    elif volume >= 1_000:
+        return f"{volume / 1_000:.2f} K"  # Thousands
+    else:
+        return str(volume)  # No formatting needed if below 1,000
+
+
+
+
 
 # Main Streamlit app
 def main():
@@ -290,6 +611,8 @@ def main():
     # Add a divider
     st.markdown("---")
 
+   
+
     # User inputs in a sidebar
     with st.sidebar:
         st.header("⚙️ Settings")
@@ -297,14 +620,42 @@ def main():
             "BTCUSDT", "ETHUSDT", "XRPUSDT", "USUALUSDT", "XLMUSDT", "STXUSDT", "VELODROMEUSDT", 
             "TIAUSDT", "IOTAUSDT", "THETAUSDT", "NEARUSDT", "HBARUSDT", "ADAUSDT", 
             "MKRUSDT", "TRUMPUSDT", "DOGEUSDT", "FLOKIUSDT", "FILUSDT","SOLUSDT","SUIUSDT",
-            "QTUMUSDT","AVAXUSDT","DOTUSDT","FETUSDT","GALAUSDT","TRXUSDT","MANAUSDT","SANDUST",
+            "QTUMUSDT","AVAXUSDT","DOTUSDT","FETUSDT","GALAUSDT","TRXUSDT","MANAUSDT","SANDUSDT",
             "ARKMUSDT","POLUSDT","OCEANUSDT","LPTUSDT"
-        ])
-        interval = st.selectbox("Select Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],index=2)
+        ],index=0)
+        interval = st.selectbox("Select Timeframe", ["1m","3m","5m", "15m", "30m", "1h", "4h", "1d"],index=3)
         limit = st.slider("Select Limit for Data Fetching", min_value=100, max_value=2000, value=500, step=100)
-
-    # Fetch candlestick data
+        epochs = st.slider("Select Number of Epochs", min_value=10, max_value=200, value=50)
+        batch_size = st.slider("Select Batch Size", min_value=8, max_value=64, value=16)
+      # Fetch candlestick data
     df = fetch_data(symbol, interval, limit=limit)
+    # 24 hour volume
+    volume = fetch_24h_volume(symbol.replace("USDT", "").upper())
+    if volume:
+        st.success(f"24h Trading Volume for {symbol.replace('USDT', '').upper()}: {volume}")
+        
+    
+    
+
+    if st.button("Predict Price"):
+        with st.spinner("Predicting in progress..."):
+            model_path, scaler_path = train_and_save_model([symbol], [interval], epochs=epochs, batch_size=batch_size)
+            predicted_price = predict_price("crypto_gru_model.h5", "crypto_gru_model_scaler.pkl", [symbol], [interval])
+            current_price = df['close'].iloc[-1]  # Get latest closing price
+            if predicted_price:
+                # Compare and display in appropriate color
+              if predicted_price > current_price:
+                  st.success(f"BUY Predicted next price for {symbol} ({interval}): **${predicted_price:.4f}**")
+              else:
+                  st.error(f"SELL Predicted next price for {symbol} ({interval}): **${predicted_price:.4f}**")
+            else:
+                st.error("Prediction failed. Not enough data.")
+           # st.success(f"Model trained and saved as {model_path}")
+           # st.success(f"Scaler saved as {scaler_path}")
+            st.balloons()
+            
+
+  
     if df is not None:
         # Apply strategy
         df = apply_strategy(df)
@@ -326,15 +677,7 @@ def main():
         with col3:
             st.markdown(css, unsafe_allow_html=True)
             st.metric("**Support (S1)**", f"{df['S1'].iloc[-1]:.4f}")
-
-        # Fetch and display the volume in USD
-        if symbol:
-            volume = get_coin_volume(symbol.replace("USDT", ""))        
-            if volume:
-                st.markdown(f"<h5 style='color: blue; font-weight: bold;'>The 24h trading volume of {symbol} in USDT is: ${volume}</h5>", unsafe_allow_html=True)
-            else:
-                st.write("Couldn't fetch the volume. Please try again later.")
-    
+        
 
         # Display the latest signal
         latest_signal = df['signal'].iloc[-1]
@@ -344,9 +687,13 @@ def main():
 
         # Evaluate profitability
         profitability = evaluate_profitability(df)
-        sentiment, sentiment_color = determine_sentiment(profitability)
         st.markdown(f"**Profitability:** {profitability:.2f}%")
-        st.markdown(f"**Sentiment:** :{sentiment_color}[{sentiment}]")
+        fear_greed = fetch_fear_greed_index()
+        if fear_greed:
+            st.markdown(f"**Market Sentiment:** {fear_greed}")
+
+        
+        #st.markdown(f"**Sentiment:** :{sentiment_color}[{sentiment}]")
 
         # Calculate volatility
         volatility = calculate_volatility(df)
@@ -362,17 +709,20 @@ def main():
             st.markdown("**Liquidity Analysis**")
             if liquidity_data:
                 # Display results in two columns
-                col1, col2 = st.columns(2)
+                col1, col2,col3 = st.columns(3)
 
                 with col1:
                     st.metric("Downside Liquidity Coin", f"{liquidity_data['downside_liquidity_coin']:.2f}")
-                    st.metric("Downside Liquidity USD", f"{format_number(liquidity_data['downside_liquidity_usd'])}")
-
-                with col2:
                     st.metric("Upside Liquidity Coin", f"{liquidity_data['upside_liquidity_coin']:.2f}")
+                    
+                with col2: 
                     st.metric("Upside Liquidity USD", f"{format_number(liquidity_data['upside_liquidity_usd'])}")
+                    st.metric("Downside Liquidity USD", f"{format_number(liquidity_data['downside_liquidity_usd'])}")
+                with col3:
+                    st.metric("Upside Price", f"{liquidity_data['upside_price']}")
+                    st.metric("Downside Price", f"{liquidity_data['downside_price']}")
 
-                
+        run_strategy(df)
 
             
 
@@ -382,7 +732,7 @@ def main():
 
         # Evaluate best timeframe
         st.markdown("**Evaluating Best Timeframe for Trading**")
-        timeframes = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
+        timeframes = ["1m","3m", "5m", "15m", "30m", "1h", "4h", "1d"]
         profitability_dict = {}
 
         for tf in timeframes:
@@ -400,3 +750,4 @@ def main():
 # Run the app
 if __name__ == "__main__":
     main()
+    
