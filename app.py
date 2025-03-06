@@ -177,10 +177,6 @@ def calculate_support_resistance(df):
 
 # Function to apply trading strategy
 
-
-import pandas as pd
-import pandas_ta as ta
-
 def calculate_dynamic_fibonacci(df):
     """Calculate dynamic Fibonacci levels based on high and low prices."""
     # Calculate high and low over the period (can be adjusted)
@@ -199,17 +195,47 @@ def calculate_dynamic_fibonacci(df):
     
     return fib_236, fib_382, fib_50, fib_618, fib_100
 
+def get_timeframe_settings(timeframe):
+    if timeframe in ['1m','3m','5m', '15m', '30m']:
+        # Settings for 1 to 30 minutes
+        ema_lengths = [9, 21, 50]
+        macd_params = (6, 13, 5)
+        rsi_length = 14
+        adx_length = 14
+        atr_length = 14
+        volume_ma_window = 20
+    elif timeframe in ['1h', '4h', '1d']:
+        # Settings for 1 hour to 1 day
+        ema_lengths = [20, 50, 200]
+        macd_params = (12, 26, 9)
+        rsi_length = 14
+        adx_length = 14
+        atr_length = 14
+        volume_ma_window = 50
+    else:
+        raise ValueError("Unsupported timeframe selected.")
+    
+    return ema_lengths, macd_params, rsi_length, adx_length, atr_length, volume_ma_window
 
-def apply_strategy(df, ema_lengths=[9, 21, 50], macd_params=(6, 13, 5)):
+def apply_strategy(df, timeframe):
+    # Get timeframe-specific settings
+    ema_lengths, macd_params, rsi_length, adx_length, atr_length, volume_ma_window = get_timeframe_settings(timeframe)
+    
     # Calculate technical indicators
     df.ta.ema(length=ema_lengths[0], append=True)
     df.ta.ema(length=ema_lengths[1], append=True)
     df.ta.ema(length=ema_lengths[2], append=True)
-    df.ta.macd(fast=macd_params[0], slow=macd_params[1], signal=macd_params[2], append=True)
-    df.ta.rsi(length=14, append=True)
-    df.ta.adx(length=14, append=True)
-    df.ta.atr(length=14, append=True)
-    df['volume_ma'] = df['volume'].rolling(window=20).mean()
+    
+    # Calculate MACD and dynamically generate column names
+    macd_fast, macd_slow, macd_signal = macd_params
+    df.ta.macd(fast=macd_fast, slow=macd_slow, signal=macd_signal, append=True)
+    macd_column = f"MACD_{macd_fast}_{macd_slow}_{macd_signal}"  # Dynamic MACD column name
+    macd_signal_column = f"MACDs_{macd_fast}_{macd_slow}_{macd_signal}"  # Dynamic MACD signal column name
+    
+    df.ta.rsi(length=rsi_length, append=True)
+    df.ta.adx(length=adx_length, append=True)
+    df.ta.atr(length=atr_length, append=True)
+    df['volume_ma'] = df['volume'].rolling(window=volume_ma_window).mean()
 
     # Calculate Fibonacci retracement levels
     df = calculate_fibonacci(df)
@@ -219,64 +245,37 @@ def apply_strategy(df, ema_lengths=[9, 21, 50], macd_params=(6, 13, 5)):
 
     # Buy signal: EMA(9) > EMA(21) > EMA(50), MACD > MACD Signal, Close > Fibonacci 50%, RSI > 60, ADX > 25, Volume > MA
     df.loc[
-        (df['EMA_9'] > df['EMA_21']) & (df['EMA_21'] > df['EMA_50']) &  # EMA condition
-        (df['MACD_6_13_5'] > df['MACDs_6_13_5']) &  # MACD condition
+        (df[f'EMA_{ema_lengths[0]}'] > df[f'EMA_{ema_lengths[1]}']) & 
+        (df[f'EMA_{ema_lengths[1]}'] > df[f'EMA_{ema_lengths[2]}']) &  # EMA condition
+        (df[macd_column] > df[macd_signal_column]) &  # MACD condition (dynamic column name)
         (df['close'] > df['fib_50']) &  # Fibonacci condition
-        (df['RSI_14'] > 50) &  # RSI condition
-        (df['ADX_14'] > 20) &  # ADX condition
+        (df[f'RSI_{rsi_length}'] > 50) &  # RSI condition
+        (df[f'ADX_{adx_length}'] > 20) &  # ADX condition
         (df['volume'] > df['volume_ma']),  # Volume condition
         'signal'
     ] = 1
 
     # Sell signal: EMA(9) < EMA(21) < EMA(50), MACD < MACD Signal, Close < Fibonacci 38.2%, RSI < 40, ADX > 25, Volume > MA
     df.loc[
-        (df['EMA_9'] < df['EMA_21']) & (df['EMA_21'] < df['EMA_50']) &  # EMA condition
-        (df['MACD_6_13_5'] < df['MACDs_6_13_5']) &  # MACD condition
+        (df[f'EMA_{ema_lengths[0]}'] < df[f'EMA_{ema_lengths[1]}']) & 
+        (df[f'EMA_{ema_lengths[1]}'] < df[f'EMA_{ema_lengths[2]}']) &  # EMA condition
+        (df[macd_column] < df[macd_signal_column]) &  # MACD condition (dynamic column name)
         (df['close'] < df['fib_382']) &  # Fibonacci condition
-        (df['RSI_14'] < 40) &  # RSI condition
-        (df['ADX_14'] > 20) &  # ADX condition
+        (df[f'RSI_{rsi_length}'] < 40) &  # RSI condition
+        (df[f'ADX_{adx_length}'] > 20) &  # ADX condition
         (df['volume'] > df['volume_ma']),  # Volume condition
         'signal'
     ] = -1
 
     # Add confirmation candle
-    df['confirmed_signal'] = df['signal'].shift(1)
-
-    # Initialize SL and TP columns
-    df['stop_loss'] = 0.0
-    df['take_profit'] = 0.0
-
-    # Track position and calculate SL/TP
-    in_position = False
-    entry_price = 0.0
-
-    for i in range(1, len(df)):
-        if not in_position:
-            if df['confirmed_signal'].iloc[i] == 1:  # Buy signal
-                entry_price = df['close'].iloc[i]
-                df.at[df.index[i], 'stop_loss'] = entry_price * 0.99  # 1% SL
-                df.at[df.index[i], 'take_profit'] = entry_price * 1.03  # 2% TP
-                in_position = True
-            elif df['confirmed_signal'].iloc[i] == -1:  # Sell signal
-                entry_price = df['close'].iloc[i]
-                df.at[df.index[i], 'stop_loss'] = entry_price * 1.01  # 1% SL
-                df.at[df.index[i], 'take_profit'] = entry_price * 0.97  # 2% TP
-                in_position = True
-        else:
-            if df['confirmed_signal'].iloc[i] == 1:  # Already in a long position
-                if df['close'].iloc[i] <= df['stop_loss'].iloc[i] or df['close'].iloc[i] >= df['take_profit'].iloc[i]:
-                    df.at[df.index[i], 'signal'] = 0  # Exit position
-                    in_position = False
-            elif df['confirmed_signal'].iloc[i] == -1:  # Already in a short position
-                if df['close'].iloc[i] >= df['stop_loss'].iloc[i] or df['close'].iloc[i] <= df['take_profit'].iloc[i]:
-                    df.at[df.index[i], 'signal'] = 0  # Exit position
-                    in_position = False
-
+   # df['confirmed_signal'] = df['signal'].shift(1)
     return df
 
 
+
+
 # Function to calculate Fibonacci retracement levels
-def calculate_fibonacci(df, window=50):
+def calculate_fibonacci(df, window=30):
     """
     Calculate Fibonacci retracement levels (38.2%, 50%, 61.8%) based on rolling high and low.
     """
@@ -310,12 +309,13 @@ def backtest_strategy(df):
     return df
 
 
-def calculate_metrics(df):
+def calculate_metrics(df,investment_amount=1000):
     """
     Calculate performance metrics like win rate, risk-reward ratio, max drawdown,
     long/short trades, positive/negative trades, profit factor, and date range.
     """
     # Total trades
+
     total_trades = df['signal'].abs().sum()
 
     # Long trades (buy signals)
@@ -353,6 +353,10 @@ def calculate_metrics(df):
     end_date = df.index[-1]  # Last date in the dataset
     num_days = (end_date - start_date).days  # Number of days
 
+     # Calculate profit/loss in USD
+    final_cumulative_return = df['cumulative_returns'].iloc[-1]  # Final cumulative return
+    profit_loss_usd = investment_amount * final_cumulative_return  # Profit/loss in USD
+
     
       # Create a list for the metrics to display
     metrics = [
@@ -367,7 +371,9 @@ def calculate_metrics(df):
         ("Start Date", start_date.strftime('%Y-%m-%d')),
         ("End Date", end_date.strftime('%Y-%m-%d')),
         ("Maximum Drawdown", f"{max_drawdown:.2%}"),
-        ("Number of Days", num_days)
+        ("Number of Days", num_days),
+        ("Profit/Loss (USD)", f"${profit_loss_usd:.2f}")  # Add profit/loss in USD
+        
     ]
     
 # Using markdown with HTML to create a table with vertical and horizontal lines
@@ -409,17 +415,19 @@ def calculate_metrics(df):
     with col5:        
         st.write("Maximum Drawdown")
         st.write("Number of Days")
+        st.write("Profit/Loss")
         
     with col6:
         st.write(f"{max_drawdown:.2%}")
         st.write(num_days)
+        st.write(f"{investment_amount} / {profit_loss_usd:.2f}")
 # Main function to run the strategy
-def run_strategy(df):
+def run_strategy(df,interval):
     """
     Run the strategy, backtest, and visualize results.
     """
     # Apply strategy
-    df = apply_strategy(df)
+    df = apply_strategy(df,interval)
 
     # Backtest strategy
     df = backtest_strategy(df)
@@ -427,7 +435,7 @@ def run_strategy(df):
     # Calculate performance metrics
     calculate_metrics(df)
 
-    return df
+    
 #here code ends
 
 # Function to evaluate profitability
@@ -483,13 +491,30 @@ def evaluate_market_conditions(volatility, manipulation_detected):
             return "Market is highly risky but no manipulation detected. **Trade with caution or avoid.**"
 
 # Function to display live candlestick chart with EMAs
-def display_chart(df):
+def display_chart(df, timeframe):
+    # Get timeframe-specific settings
+    ema_lengths, macd_params, rsi_length, adx_length, atr_length, volume_ma_window = get_timeframe_settings(timeframe)
+    
+    # Dynamically generate EMA column names
+    ema_columns = [f'EMA_{ema_length}' for ema_length in ema_lengths]
+    
+    # Dynamically generate MACD column names
+    macd_fast, macd_slow, macd_signal = macd_params
+    macd_column = f"MACD_{macd_fast}_{macd_slow}_{macd_signal}"
+    macd_signal_column = f"MACDs_{macd_fast}_{macd_slow}_{macd_signal}"
+    macd_histogram_column = f"MACDh_{macd_fast}_{macd_slow}_{macd_signal}"
+
     # Add EMAs to the chart
     apds = [
-        mpf.make_addplot(df['EMA_9'], color='yellow', width=1, panel=0),  # EMA 20 (Yellow)
-        mpf.make_addplot(df['EMA_21'], color='green', width=1, panel=0),  # EMA 50 (Green)
-        mpf.make_addplot(df['EMA_50'], color='blue', width=1, panel=0),  # EMA 100 (Blue)
+        mpf.make_addplot(df[ema_columns[0]], color='yellow', width=1, panel=0),  # EMA 1 (Yellow)
+        mpf.make_addplot(df[ema_columns[1]], color='green', width=1, panel=0),  # EMA 2 (Green)
+        mpf.make_addplot(df[ema_columns[2]], color='blue', width=1, panel=0),  # EMA 3 (Blue)
     ]
+
+    # Add MACD to the chart (optional)
+    apds.append(mpf.make_addplot(df[macd_column], color='purple', width=1, panel=2, ylabel='MACD'))  # MACD line
+    apds.append(mpf.make_addplot(df[macd_signal_column], color='orange', width=1, panel=2))  # MACD signal line
+    apds.append(mpf.make_addplot(df[macd_histogram_column], type='bar', color='gray', width=0.7, panel=2))  # MACD histogram
 
     # Create a figure and axis for the candlestick chart
     fig, axes = mpf.plot(
@@ -497,9 +522,13 @@ def display_chart(df):
         type='candle',
         style='charles',
         volume=True,  # Add volume subplot
-        addplot=apds,  # Add EMAs to the chart
-        returnfig=True
+        addplot=apds,  # Add EMAs and MACD to the chart
+        returnfig=True,
+        figsize=(12, 8),
+        panel_ratios=(4, 1, 1)  # Adjust panel ratios for main chart, volume, and MACD
     )
+    
+    # Display the chart in Streamlit
     st.pyplot(fig)
 
 # Function to format numbers in M/K notation
@@ -671,14 +700,15 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
         symbol = st.selectbox("Select Coin", [
-            "BTCUSDT", "ETHUSDT", "XRPUSDT", "USUALUSDT", "XLMUSDT", "STXUSDT", "VELODROMEUSDT", 
+            "BTCUSDT", "ETHUSDT", "XRPUSDT", "XLMUSDT", 
             "TIAUSDT", "IOTAUSDT", "THETAUSDT", "NEARUSDT", "HBARUSDT", "ADAUSDT", 
             "MKRUSDT", "TRUMPUSDT", "DOGEUSDT", "FLOKIUSDT", "FILUSDT","SOLUSDT","SUIUSDT",
-            "QTUMUSDT","AVAXUSDT","DOTUSDT","FETUSDT","GALAUSDT","TRXUSDT","MANAUSDT","SANDUSDT",
-            "ARKMUSDT","POLUSDT","OCEANUSDT","LPTUSDT"
+            "QTUMUSDT","AVAXUSDT","DOTUSDT","FETUSDT","GALAUSDT","TRXUSDT","MANAUSDT","SANDUSDT"
+            ,"POLUSDT","OCEANUSDT","LPTUSDT"
         ],index=0)
         interval = st.selectbox("Select Timeframe", ["1m","3m","5m", "15m", "30m", "1h", "4h", "1d"],index=3)
         limit = st.slider("Select Limit for Data Fetching", min_value=100, max_value=2000, value=500, step=100)
+        
         epochs = st.slider("Select Number of Epochs", min_value=10, max_value=200, value=50)
         batch_size = st.slider("Select Batch Size", min_value=8, max_value=64, value=16)
       # Fetch candlestick data
@@ -712,7 +742,7 @@ def main():
   
     if df is not None:
         # Apply strategy
-        df = apply_strategy(df)
+        df = apply_strategy(df,interval)
 
         # Calculate support and resistance levels
         df = calculate_support_resistance(df)
@@ -777,13 +807,14 @@ def main():
                     st.metric("Upside Price", f"{liquidity_data['upside_price']}")
                     st.metric("Downside Price", f"{liquidity_data['downside_price']}")
 
-        run_strategy(df)
+        run_strategy(df,interval)
+      
 
             
 
         # Display candlestick chart with EMAs
         st.markdown("**Live Candlestick Chart**")
-        display_chart(df)
+        display_chart(df,interval)
 
         # Evaluate best timeframe
         st.markdown("**Evaluating Best Timeframe for Trading**")
@@ -793,7 +824,7 @@ def main():
         for tf in timeframes:
             df_tf = fetch_data(symbol, tf, limit=limit)
             if df_tf is not None:
-                df_tf = apply_strategy(df_tf)
+                df_tf = apply_strategy(df_tf,interval)
                 profitability_dict[tf] = evaluate_profitability(df_tf)
 
         if profitability_dict:
