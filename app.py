@@ -103,7 +103,7 @@ def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
 
 # Function to get live crypto price
 def get_crypto_price(symbol):
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+    url = f"https://api.binance.us/api/v3/ticker/price?symbol={symbol}"
     response = requests.get(url)
     if response.status_code == 200:
         return float(response.json()["price"])
