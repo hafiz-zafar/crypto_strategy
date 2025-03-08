@@ -79,7 +79,7 @@ def fetch_fear_greed_index():
 
 # Function to fetch data from Binance API
 def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
-    url = f"https://api.binance.us/api/v3/klines"
+    url = f"https://api.binance.com/api/v3/klines"
     params = {
         "symbol": symbol,
         "interval": interval,
@@ -101,9 +101,17 @@ def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
         st.error("Failed to fetch data from Binance API.")
         return None
 
+# Function to get live crypto price
+def get_crypto_price(symbol):
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        return float(response.json()["price"])
+    else:
+        return None
 # Function to fetch order book data
 def fetch_order_book(symbol, limit=500):
-    url = "https://api.binance.us/api/v3/depth"
+    url = "https://api.binance.com/api/v3/depth"
     params = {"symbol": symbol, "limit": limit}
     response = requests.get(url, params=params)
     if response.status_code == 200:
@@ -177,23 +185,6 @@ def calculate_support_resistance(df):
 
 # Function to apply trading strategy
 
-def calculate_dynamic_fibonacci(df):
-    """Calculate dynamic Fibonacci levels based on high and low prices."""
-    # Calculate high and low over the period (can be adjusted)
-    high_price = df['high'].max()
-    low_price = df['low'].min()
-    
-    # Calculate the range
-    price_range = high_price - low_price
-    
-    # Calculate Fibonacci levels
-    fib_236 = low_price + 0.236 * price_range  # 23.6% Fibonacci level
-    fib_382 = low_price + 0.382 * price_range  # 38.2% Fibonacci level
-    fib_50 = low_price + 0.5 * price_range  # 50% Fibonacci level
-    fib_618 = low_price + 0.618 * price_range  # 61.8% Fibonacci level
-    fib_100 = high_price  # 100% Fibonacci level
-    
-    return fib_236, fib_382, fib_50, fib_618, fib_100
 
 def get_timeframe_settings(timeframe):
     if timeframe in ['1m','3m','5m', '15m', '30m']:
@@ -206,16 +197,17 @@ def get_timeframe_settings(timeframe):
         volume_ma_window = 20
     elif timeframe in ['1h', '4h', '1d']:
         # Settings for 1 hour to 1 day
-        ema_lengths = [20, 50, 200]
+        ema_lengths = [20, 50, 100]
         macd_params = (12, 26, 9)
         rsi_length = 14
         adx_length = 14
         atr_length = 14
-        volume_ma_window = 50
+        volume_ma_window = 20
     else:
         raise ValueError("Unsupported timeframe selected.")
     
     return ema_lengths, macd_params, rsi_length, adx_length, atr_length, volume_ma_window
+
 
 def apply_strategy(df, timeframe):
     # Get timeframe-specific settings
@@ -232,7 +224,10 @@ def apply_strategy(df, timeframe):
     macd_column = f"MACD_{macd_fast}_{macd_slow}_{macd_signal}"  # Dynamic MACD column name
     macd_signal_column = f"MACDs_{macd_fast}_{macd_slow}_{macd_signal}"  # Dynamic MACD signal column name
     
-    df.ta.rsi(length=rsi_length, append=True)
+    # Calculate RSI and add it to the DataFrame
+    df.ta.rsi(length=rsi_length, append=True)  # This adds an 'RSI_{rsi_length}' column
+    rsi_column = f"RSI_{rsi_length}"  # Dynamic RSI column name
+    
     df.ta.adx(length=adx_length, append=True)
     df.ta.atr(length=atr_length, append=True)
     df['volume_ma'] = df['volume'].rolling(window=volume_ma_window).mean()
@@ -248,31 +243,154 @@ def apply_strategy(df, timeframe):
         (df[f'EMA_{ema_lengths[0]}'] > df[f'EMA_{ema_lengths[1]}']) & 
         (df[f'EMA_{ema_lengths[1]}'] > df[f'EMA_{ema_lengths[2]}']) &  # EMA condition
         (df[macd_column] > df[macd_signal_column]) &  # MACD condition (dynamic column name)
-        (df['close'] > df['fib_50']) &  # Fibonacci condition
-        (df[f'RSI_{rsi_length}'] > 50) &  # RSI condition
-        (df[f'ADX_{adx_length}'] > 20) &  # ADX condition
+        (df['close'] > df['fib_618']) &  # Fibonacci condition
+        (df[rsi_column] > 50) &  # RSI condition (use dynamic column name)
+        (df[f'ADX_{adx_length}'] > 25) &  # ADX condition
         (df['volume'] > df['volume_ma']),  # Volume condition
         'signal'
     ] = 1
 
-    # Sell signal: EMA(9) < EMA(21) < EMA(50), MACD < MACD Signal, Close < Fibonacci 38.2%, RSI < 40, ADX > 25, Volume > MA
+    # Sell signal: EMA(5) < EMA(13) < EMA(21), MACD < MACD Signal, Close < Fibonacci 0.382, RSI < 40, ADX > 25, Volume > MA
     df.loc[
         (df[f'EMA_{ema_lengths[0]}'] < df[f'EMA_{ema_lengths[1]}']) & 
         (df[f'EMA_{ema_lengths[1]}'] < df[f'EMA_{ema_lengths[2]}']) &  # EMA condition
         (df[macd_column] < df[macd_signal_column]) &  # MACD condition (dynamic column name)
         (df['close'] < df['fib_382']) &  # Fibonacci condition
-        (df[f'RSI_{rsi_length}'] < 40) &  # RSI condition
-        (df[f'ADX_{adx_length}'] > 20) &  # ADX condition
+        (df[rsi_column] < 40) &  # RSI condition (use dynamic column name)
+        (df[f'ADX_{adx_length}'] > 25) &  # ADX condition
         (df['volume'] > df['volume_ma']),  # Volume condition
         'signal'
     ] = -1
 
     # Add confirmation candle
-   # df['confirmed_signal'] = df['signal'].shift(1)
+    df['confirmed_signal'] = df['signal'].shift(1)
+ 
     return df
 
+def calculate_metrics(trades_df, open_trade, initial_capital=5000):
+    """
+    Calculate performance metrics based on the trades DataFrame.
+    """
+    # Total trades
+    total_trades = len(trades_df)
 
+    # Total long trades (Buy signals)
+    total_long_trades = trades_df[trades_df['Signal'] == 'Buy'].shape[0]
 
+    # Total short trades (Sell signals)
+    total_short_trades = trades_df[trades_df['Signal'] == 'Sell'].shape[0]
+
+    # Total profitable trades
+    total_profit_trades = trades_df[trades_df['Profit/Loss (USD)'] > 0].shape[0]
+
+    # Total loss trades
+    total_loss_trades = trades_df[trades_df['Profit/Loss (USD)'] < 0].shape[0]
+
+    # Win rate (% of profitable trades)
+    win_rate = (total_profit_trades / total_trades) * 100 if total_trades > 0 else 0
+
+    # Risk-reward ratio
+    avg_profit = trades_df[trades_df['Profit/Loss (USD)'] > 0]['Profit/Loss (USD)'].mean()
+    avg_loss = trades_df[trades_df['Profit/Loss (USD)'] < 0]['Profit/Loss (USD)'].mean()
+    risk_reward_ratio = abs(avg_profit / avg_loss) if avg_loss != 0 else 0
+
+    # Profit factor
+    gross_profit = trades_df[trades_df['Profit/Loss (USD)'] > 0]['Profit/Loss (USD)'].sum()
+    gross_loss = trades_df[trades_df['Profit/Loss (USD)'] < 0]['Profit/Loss (USD)'].sum()
+    profit_factor = abs(gross_profit / gross_loss) if gross_loss != 0 else 0
+
+    # Start date and end date of trades
+    start_date = trades_df['Entry Time'].min()
+    end_date = trades_df['Exit Time'].max() if not trades_df[trades_df['Status'] == 'Open'].empty else trades_df['Exit Time'].max()
+
+    # Total number of days of trading
+    total_days = (end_date - start_date).days
+
+    # Maximum drawdown
+    cumulative_profit = trades_df['Profit/Loss (USD)'].cumsum()
+    peak = cumulative_profit.cummax()
+    drawdown = cumulative_profit - peak
+    max_drawdown = drawdown.min()
+
+    # Total profit/loss amount
+    total_profit_loss = trades_df['Profit/Loss (USD)'].sum()
+    final_amount = initial_capital + total_profit_loss
+
+    # Open trade signal (if any)
+    open_signal = None
+    if open_trade is not None:
+        open_signal = open_trade['Signal']
+
+    # Create a dictionary of metrics
+    metrics = {
+        "Total Trades": total_trades,
+        "Total Long Trades": total_long_trades,
+        "Total Short Trades": total_short_trades,
+        "Total Profit Trades": total_profit_trades,
+        "Total Loss Trades": total_loss_trades,
+        "Win Rate (%)": win_rate,
+        "Risk-Reward Ratio": risk_reward_ratio,
+        "Profit Factor": profit_factor,
+        "Start Date": start_date.strftime('%Y-%m-%d'),
+        "End Date": end_date.strftime('%Y-%m-%d'),
+        "Total Number of Days": total_days,
+        "Max Drawdown (USD)": max_drawdown,
+        "Profit/Loss (USD)": f"{initial_capital} / {final_amount:.2f}",
+        "Open Trade Signal": open_signal
+    }
+
+    return metrics
+
+def display_metrics(metrics):
+    """
+    Display performance metrics in Streamlit.
+    """
+    st.markdown("### Strategy Performance Metrics")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write("**Total Trades**")
+        st.write("**Total Long Trades**")
+        st.write("**Total Short Trades**")
+        st.write("**Total Profit Trades**")
+        st.write("**Total Loss Trades**")
+        st.write("**Win Rate (%)**")
+        st.write("**Risk-Reward Ratio**")
+
+    with col2:
+        st.markdown(metrics["Total Trades"])
+        st.markdown(metrics["Total Long Trades"])
+        st.markdown(metrics["Total Short Trades"])
+        st.markdown(metrics["Total Profit Trades"])
+        st.markdown(metrics["Total Loss Trades"])
+        st.write(f"{metrics['Win Rate (%)']:.2f}%")
+        st.write(f"{metrics['Risk-Reward Ratio']:.2f}")
+
+    col3, col4 = st.columns(2)
+
+    with col3:
+        st.write("**Profit Factor**")
+        st.write("**Start Date**")
+        st.write("**End Date**")
+        st.write("**Total Number of Days**")
+        st.write("**Max Drawdown (USD)**")
+        st.write("**Profit/Loss (USD)**")
+        st.write("**Open Trade Signal**")
+
+    with col4:
+        st.write(f"{metrics['Profit Factor']:.2f}")
+        st.write(metrics["Start Date"])
+        st.write(metrics["End Date"])
+        st.markdown(metrics["Total Number of Days"])
+        st.write(f"{metrics['Max Drawdown (USD)']:.2f}")
+        st.write(metrics["Profit/Loss (USD)"])
+        if metrics["Open Trade Signal"] is not None:
+            if metrics["Open Trade Signal"] == "Buy":
+                st.markdown("<span style='color: green; font-weight: bold;'>Buy</span>", unsafe_allow_html=True)
+            elif metrics["Open Trade Signal"] == "Sell":
+                st.markdown("<span style='color: red; font-weight: bold;'>Sell</span>", unsafe_allow_html=True)
+        else:
+            st.write("None")
 
 # Function to calculate Fibonacci retracement levels
 def calculate_fibonacci(df, window=30):
@@ -289,7 +407,135 @@ def calculate_fibonacci(df, window=30):
         print(f"Error calculating Fibonacci levels: {e}")
     return df
 
+# Function to simulate trades and track open trades
+def simulate_trades(df, initial_capital=5000):
+    trades = []
+    open_trade = None  # Track the currently open trade
+    capital = initial_capital  # Starting capital in USD
 
+    # Get the RSI column name dynamically
+    rsi_column = f"RSI_14"  # Assuming RSI length is 14 (update if different)
+
+    for i in range(len(df)):
+        if open_trade is None:  # No open trade, check for a new signal
+            if df['signal'].iloc[i] == 1:  # Buy signal
+                entry_price = df['close'].iloc[i]
+                entry_time = df.index[i]
+                quantity = capital / entry_price  # Calculate quantity of coins bought
+                capital = 0  # All capital is used to buy coins
+                sl = entry_price * (1 - 0.025)  # 2.5% Stop Loss below entry price
+                tp = entry_price * (1 + 0.05)  # 5% Take Profit above entry price
+                open_trade = {
+                    'Entry Time': entry_time,
+                    'Exit Time': None,
+                    'Signal': 'Buy',
+                    'Buy Price': entry_price,
+                    'Sell Price': None,
+                    'Quantity (BTC)': quantity,
+                    'Money Used (USD)': initial_capital,
+                    'Profit/Loss (USD)': None,
+                    'Status': 'Open',
+                    'SL': sl,
+                    'TP': tp,
+                    'Exit Reason': None
+                }
+            elif df['signal'].iloc[i] == -1:  # Sell signal (short selling)
+                entry_price = df['close'].iloc[i]
+                entry_time = df.index[i]
+                quantity = capital / entry_price  # Calculate quantity of coins sold
+                capital = 0  # All capital is used to short sell
+                sl = entry_price * (1 + 0.025)  # 2.5% Stop Loss above entry price
+                tp = entry_price * (1 - 0.05)  # 5% Take Profit below entry price
+                open_trade = {
+                    'Entry Time': entry_time,
+                    'Exit Time': None,
+                    'Signal': 'Sell',
+                    'Buy Price': None,
+                    'Sell Price': entry_price,
+                    'Quantity (BTC)': quantity,
+                    'Money Used (USD)': initial_capital,
+                    'Profit/Loss (USD)': None,
+                    'Status': 'Open',
+                    'SL': sl,
+                    'TP': tp,
+                    'Exit Reason': None
+                }
+        else:  # There is an open trade, check for SL, TP, or closing signal
+            exit_price = None
+            exit_reason = None
+
+            if open_trade['Signal'] == 'Buy':
+                # Check for SL hit (low price <= SL)
+                if df['low'].iloc[i] <= open_trade['SL']:
+                    exit_price = open_trade['SL']
+                    exit_reason = 'SL Hit'
+                    open_trade['TP'] = None  # TP is not relevant for SL hit
+                # Check for TP hit (high price >= TP)
+                elif df['high'].iloc[i] >= open_trade['TP']:
+                    exit_price = open_trade['TP']
+                    exit_reason = 'TP Hit'
+                    open_trade['SL'] = None  # SL is not relevant for TP hit
+                # Check for RSI overbought condition (RSI > 70)
+                elif df[rsi_column].iloc[i] > 70:  # Use dynamic RSI column name
+                    exit_price = df['close'].iloc[i]
+                    exit_reason = 'RSI Overbought'
+                    open_trade['SL'] = None  # SL is not relevant for RSI exit
+                    open_trade['TP'] = None  # TP is not relevant for RSI exit
+                # Check for sell signal
+                elif df['signal'].iloc[i] == -1:
+                    exit_price = df['close'].iloc[i]
+                    exit_reason = 'Signal Exit'
+                    open_trade['SL'] = None  # SL is not relevant for signal exit
+                    open_trade['TP'] = None  # TP is not relevant for signal exit
+
+            elif open_trade['Signal'] == 'Sell':
+                # Check for SL hit (high price >= SL)
+                if df['high'].iloc[i] >= open_trade['SL']:
+                    exit_price = open_trade['SL']
+                    exit_reason = 'SL Hit'
+                    open_trade['TP'] = None  # TP is not relevant for SL hit
+                # Check for TP hit (low price <= TP)
+                elif df['low'].iloc[i] <= open_trade['TP']:
+                    exit_price = open_trade['TP']
+                    exit_reason = 'TP Hit'
+                    open_trade['SL'] = None  # SL is not relevant for TP hit
+                # Check for RSI oversold condition (RSI < 30)
+                elif df[rsi_column].iloc[i] < 30:  # Use dynamic RSI column name
+                    exit_price = df['close'].iloc[i]
+                    exit_reason = 'RSI Oversold'
+                    open_trade['SL'] = None  # SL is not relevant for RSI exit
+                    open_trade['TP'] = None  # TP is not relevant for RSI exit
+                # Check for buy signal
+                elif df['signal'].iloc[i] == 1:
+                    exit_price = df['close'].iloc[i]
+                    exit_reason = 'Signal Exit'
+                    open_trade['SL'] = None  # SL is not relevant for signal exit
+                    open_trade['TP'] = None  # TP is not relevant for signal exit
+
+            if exit_price is not None:  # Close the trade
+                exit_time = df.index[i]
+                if open_trade['Signal'] == 'Buy':
+                    profit_loss = (exit_price - open_trade['Buy Price']) * open_trade['Quantity (BTC)']
+                    open_trade['Sell Price'] = exit_price  # Update Sell Price for Buy trade
+                else:  # Sell trade
+                    profit_loss = (open_trade['Sell Price'] - exit_price) * open_trade['Quantity (BTC)']
+                    open_trade['Buy Price'] = exit_price  # Update Buy Price for Sell trade
+                capital = open_trade['Quantity (BTC)'] * exit_price  # Update capital after closing
+                open_trade.update({
+                    'Exit Time': exit_time,
+                    'Profit/Loss (USD)': profit_loss,
+                    'Status': 'Closed',
+                    'Exit Reason': exit_reason
+                })
+                trades.append(open_trade)
+                open_trade = None  # Reset open trade
+                initial_capital += profit_loss  # Add profit/loss to initial capital for the next trade
+
+    # If there is an open trade at the end of the data, add it to the trades list
+    if open_trade is not None:
+        trades.append(open_trade)
+
+    return pd.DataFrame(trades), open_trade
 # here code starts
 # Function to backtest the strategy
 def backtest_strategy(df):
@@ -309,118 +555,7 @@ def backtest_strategy(df):
     return df
 
 
-def calculate_metrics(df,investment_amount=1000):
-    """
-    Calculate performance metrics like win rate, risk-reward ratio, max drawdown,
-    long/short trades, positive/negative trades, profit factor, and date range.
-    """
-    # Total trades
 
-    total_trades = df['signal'].abs().sum()
-
-    # Long trades (buy signals)
-    long_trades = df[df['signal'] == 1]['signal'].count()
-
-    # Short trades (sell signals)
-    short_trades = df[df['signal'] == -1]['signal'].abs().count()
-
-    # Winning trades (positive returns)
-    winning_trades = df[df['strategy_returns'] > 0]['strategy_returns'].count()
-
-    # Losing trades (negative returns)
-    losing_trades = df[df['strategy_returns'] < 0]['strategy_returns'].count()
-
-    # Win rate
-    win_rate = winning_trades / total_trades if total_trades > 0 else 0
-
-    # Risk-reward ratio
-    avg_gain = df[df['strategy_returns'] > 0]['strategy_returns'].mean()
-    avg_loss = df[df['strategy_returns'] < 0]['strategy_returns'].mean()
-    risk_reward_ratio = abs(avg_gain / avg_loss) if avg_loss != 0 else 0
-
-    # Maximum drawdown
-    df['cumulative_max'] = df['cumulative_returns'].cummax()
-    df['drawdown'] = df['cumulative_returns'] - df['cumulative_max']
-    max_drawdown = df['drawdown'].min()
-
-    # Profit factor
-    gross_profit = df[df['strategy_returns'] > 0]['strategy_returns'].sum()
-    gross_loss = df[df['strategy_returns'] < 0]['strategy_returns'].sum()
-    profit_factor = abs(gross_profit / gross_loss) if gross_loss != 0 else 0
-
-    # Date range and number of days
-    start_date = df.index[0]  # First date in the dataset
-    end_date = df.index[-1]  # Last date in the dataset
-    num_days = (end_date - start_date).days  # Number of days
-
-     # Calculate profit/loss in USD
-    final_cumulative_return = df['cumulative_returns'].iloc[-1]  # Final cumulative return
-    profit_loss_usd = investment_amount * final_cumulative_return  # Profit/loss in USD
-
-    
-      # Create a list for the metrics to display
-    metrics = [
-        ("Total Trades", total_trades),
-        ("Long Trades", long_trades),
-        ("Short Trades", short_trades),
-        ("Positive Trades", winning_trades),
-        ("Negative Trades", losing_trades),
-        ("Win Rate", f"{win_rate:.2%}"),
-        ("Risk-Reward Ratio", risk_reward_ratio),
-        ("Profit Factor", profit_factor),     
-        ("Start Date", start_date.strftime('%Y-%m-%d')),
-        ("End Date", end_date.strftime('%Y-%m-%d')),
-        ("Maximum Drawdown", f"{max_drawdown:.2%}"),
-        ("Number of Days", num_days),
-        ("Profit/Loss (USD)", f"${profit_loss_usd:.2f}")  # Add profit/loss in USD
-        
-    ]
-    
-# Using markdown with HTML to create a table with vertical and horizontal lines
-    st.markdown("### Strategy Performance")
-       # Create 6 columns to organize the data better
-    col1, col2, col3, col4, col5, col6 = st.columns(6)  # 6 columns
-
-    # Assigning values to columns
-    with col1:
-        st.write("Total Trades")
-        st.write("Long Trades")
-        st.write("Short Trades")
-        st.write("Positive Trades")
-        st.write("Negative Trades")
-        
-    with col2:
-        st.write(total_trades)
-        st.write(long_trades)
-        st.write(short_trades)
-        st.write(winning_trades)
-        st.write(losing_trades)
-
-    with col3:
-        st.write("Win Rate")
-        st.write("Risk-Reward Ratio")
-        st.write("Profit Factor")
-        st.write("Start Date")
-        st.write("End Date")
-       
-        
-    with col4:
-        st.write(f"{win_rate:.2%}")
-        st.write(risk_reward_ratio)
-        st.write(profit_factor)
-        st.write(start_date.strftime('%Y-%m-%d'))
-        st.write(end_date.strftime('%Y-%m-%d'))       
-        
-
-    with col5:        
-        st.write("Maximum Drawdown")
-        st.write("Number of Days")
-        st.write("Profit/Loss")
-        
-    with col6:
-        st.write(f"{max_drawdown:.2%}")
-        st.write(num_days)
-        st.write(f"{investment_amount} / {profit_loss_usd:.2f}")
 # Main function to run the strategy
 def run_strategy(df,interval):
     """
@@ -447,15 +582,6 @@ def evaluate_profitability(df):
     final_value = initial_investment * df['cumulative_returns'].iloc[-1]
     profitability = ((final_value - initial_investment) / initial_investment) * 100
     return profitability
-
-# Function to detect market manipulation
-def detect_market_manipulation(df):
-    # Simple heuristic: Check for abnormal volume spikes
-    volume_mean = df['volume'].mean()
-    volume_std = df['volume'].std()
-    abnormal_volume = df['volume'] > (volume_mean + 2 * volume_std)
-    manipulation_detected = abnormal_volume.any()
-    return manipulation_detected
 
 # Function to calculate volatility
 def calculate_volatility(df):
@@ -540,6 +666,17 @@ def format_number(value):
     else:
         return f"{value:.2f}"  # Keep normal format
 
+# Function to format large numbers in K, M, B
+def format_volume(volume):
+    volume = float(volume)  # Ensure the volume is a float
+    if volume >= 1_000_000_000:
+        return f"{volume / 1_000_000_000:.2f} B"  # Billions
+    elif volume >= 1_000_000:
+        return f"{volume / 1_000_000:.2f} M"  # Millions
+    elif volume >= 1_000:
+        return f"{volume / 1_000:.2f} K"  # Thousands
+    else:
+        return str(volume)  # No formatting needed if below 1,000
 
 # GRU MODEL TRAINING STARTS HERE
 
@@ -584,7 +721,7 @@ def train_and_save_model(symbols, intervals, epochs=100, batch_size=16, time_ste
     for symbol in symbols:
         for interval in intervals:
             print(f"Fetching data for {symbol} at {interval} interval...")
-            df = fetch_data(symbol, interval,limit=500)
+            df = fetch_data(symbol, interval,limit=1000)
             if df is None:
                 continue
             combined_data.append(df)
@@ -653,24 +790,36 @@ def predict_price(model_filename, scaler_filename, symbol, interval, time_steps=
     
     return predicted_price
 
-# Function to format large numbers in K, M, B
-def format_volume(volume):
-    volume = float(volume)  # Ensure the volume is a float
-    if volume >= 1_000_000_000:
-        return f"{volume / 1_000_000_000:.2f} B"  # Billions
-    elif volume >= 1_000_000:
-        return f"{volume / 1_000_000:.2f} M"  # Millions
-    elif volume >= 1_000:
-        return f"{volume / 1_000:.2f} K"  # Thousands
-    else:
-        return str(volume)  # No formatting needed if below 1,000
 
 
+# Function to highlight cells based on profit/loss
+def highlight_cells(val):
+    if val is None:
+        return ''
+    elif isinstance(val, (int, float)):
+        color = 'green' if val > 0 else 'red'
+        return f'background-color: {color}'
+    return ''
 
+def evaluate_profitability_and_win_rate(df):
+    initial_investment = 100  # Fixed initial investment
+    df['returns'] = df['close'].pct_change()
+    df['strategy_returns'] = df['signal'].shift(1) * df['returns']
+    df['cumulative_returns'] = (1 + df['strategy_returns']).cumprod()
+    final_value = initial_investment * df['cumulative_returns'].iloc[-1]
+    profitability = ((final_value - initial_investment) / initial_investment) * 100
 
+    # Calculate win rate
+    trades_df, _ = simulate_trades(df)
+    total_trades = len(trades_df)
+    total_profit_trades = trades_df[trades_df['Profit/Loss (USD)'] > 0].shape[0]
+    win_rate = (total_profit_trades / total_trades) * 100 if total_trades > 0 else 0
+
+    return profitability, win_rate
 
 # Main Streamlit app
 def main():
+   
     # Set page title and layout
     st.set_page_config(page_title="Crypto Trading Dashboard", layout="wide")
 
@@ -707,8 +856,26 @@ def main():
             ,"POLUSDT","OCEANUSDT","LPTUSDT"
         ],index=0)
         interval = st.selectbox("Select Timeframe", ["1m","3m","5m", "15m", "30m", "1h", "4h", "1d"],index=3)
-        limit = st.slider("Select Limit for Data Fetching", min_value=100, max_value=2000, value=500, step=100)
-        
+        limit = st.slider("Select Limit for Data Fetching", min_value=100, max_value=1000, value=500, step=100)
+
+        st.markdown("**Evaluating Best Timeframe for Trading**")
+        timeframes = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]
+        win_rate_dict = {}
+
+        for tf in timeframes:
+              df_tf = fetch_data(symbol, tf, limit=limit)
+              if df_tf is not None:
+                  df_tf = apply_strategy(df_tf, tf)
+                  _, win_rate = evaluate_profitability_and_win_rate(df_tf)
+                  win_rate_dict[tf] = win_rate
+
+        if win_rate_dict:
+              best_timeframe = max(win_rate_dict, key=win_rate_dict.get)
+              best_win_rate = win_rate_dict[best_timeframe]
+              st.markdown(f"**Best Timeframe for Trading (Highest Win Rate):** {best_timeframe}")
+              st.markdown(f"**Win Rate for Best Timeframe:** {best_win_rate:.2f}%")  
+
+
         epochs = st.slider("Select Number of Epochs", min_value=10, max_value=200, value=50)
         batch_size = st.slider("Select Batch Size", min_value=8, max_value=64, value=16)
       # Fetch candlestick data
@@ -755,37 +922,15 @@ def main():
         # Display key metrics in columns
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("**Current Price**", f"{df['close'].iloc[-1]:.4f}")
+            #st.metric("**Current Price**", f"{df['close'].iloc[-1]:.4f}")       # Price display container
+            price_container = st.empty()  
         with col2:
             st.metric("**Resistance (R1)**", f"{df['R1'].iloc[-1]:.4f}")
         with col3:
             st.markdown(css, unsafe_allow_html=True)
             st.metric("**Support (S1)**", f"{df['S1'].iloc[-1]:.4f}")
         
-
-        # Display the latest signal
-        latest_signal = df['signal'].iloc[-1]
-        signal_text = "Buy" if latest_signal == 1 else "Sell" if latest_signal == -1 else "Hold"
-        signal_color = "green" if latest_signal == 1 else "red" if latest_signal == -1 else "gray"
-        st.markdown(f"**Latest Signal:** :{signal_color}[{signal_text}]")
-
-        # Evaluate profitability
-        profitability = evaluate_profitability(df)
-        st.markdown(f"**Profitability:** {profitability:.2f}%")
-        fear_greed = fetch_fear_greed_index()
-        if fear_greed:
-            st.markdown(f"**Market Sentiment:** {fear_greed}")
-
-        
-        #st.markdown(f"**Sentiment:** :{sentiment_color}[{sentiment}]")
-
-        # Calculate volatility
-        volatility = calculate_volatility(df)
-        volatility_interpretation = interpret_volatility(volatility)
-        st.markdown(f"**Volatility:** {volatility:.2f}%")
-        st.markdown(f"**Volatility Interpretation:** {volatility_interpretation}")
-
-        # Fetch order book data
+             # Fetch order book data
         order_book = fetch_order_book(symbol, limit=limit)
         if order_book:
             # Calculate highest liquidity on upside and downside
@@ -807,8 +952,70 @@ def main():
                     st.metric("Upside Price", f"{liquidity_data['upside_price']}")
                     st.metric("Downside Price", f"{liquidity_data['downside_price']}")
 
-        run_strategy(df,interval)
-      
+
+        
+       # run_strategy(df,interval)
+
+       
+           # Simulate trades
+        df['rsi'] = ta.rsi(df['close'], length=14)  # RSI with a 14-period lookback
+
+        # Calculate ATR (Average True Range)
+        df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)  # ATR with a 14-period lookback
+
+        # Drop rows with NaN values (since indicators like RSI and ATR require a lookback period)
+        df.dropna(inplace=True)
+        trades_df, open_trade = simulate_trades(df)
+
+        # Display latest signal or open trade
+        st.markdown("### Current Trade Details")
+        if open_trade is not None:
+            st.markdown(f"**Latest Signal:** {open_trade['Signal']} (Open Trade)")
+            st.write(f"**Entry Time:** {open_trade['Entry Time']}")
+            st.write(f"**Buy Price:** {open_trade['Buy Price'] if open_trade['Signal'] == 'Buy' else 'N/A'}")
+            st.write(f"**Sell Price:** {open_trade['Sell Price'] if open_trade['Signal'] == 'Sell' else 'N/A'}")
+            st.write(f"**Quantity (BTC):** {open_trade['Quantity (BTC)']}")
+            st.write(f"**Money Used (USD):** {open_trade['Money Used (USD)']}")
+            st.write(f"**Stop Loss (SL):** {open_trade['SL']}")
+            st.write(f"**Take Profit (TP):** {open_trade['TP']}")
+        else:
+            st.markdown("**Latest Signal:** No open trades.")
+
+        # Calculate performance metrics
+        metrics = calculate_metrics(trades_df, open_trade)
+
+        # Display performance metrics
+        display_metrics(metrics)
+
+      # Evaluate profitability
+        profitability = evaluate_profitability(df)
+        st.markdown(f"**Profitability:** {profitability:.2f}%")
+        fear_greed = fetch_fear_greed_index()
+        if fear_greed:
+            st.markdown(f"**Market Sentiment:** {fear_greed}")
+
+        
+        #st.markdown(f"**Sentiment:** :{sentiment_color}[{sentiment}]")
+
+        # Calculate volatility
+        volatility = calculate_volatility(df)
+        volatility_interpretation = interpret_volatility(volatility)
+        st.markdown(f"**Volatility:** {volatility:.2f}%")
+        st.markdown(f"**Volatility Interpretation:** {volatility_interpretation}")
+
+   
+        # Highlight cells
+        styled_trades = trades_df.style.applymap(highlight_cells, subset=['Profit/Loss (USD)'])
+
+        # Display trades
+        st.write("Trade Details (Closed and Open Trades)")
+        st.dataframe(styled_trades)
+
+        # Display summary
+        total_trades = len(trades_df)
+        total_profit = trades_df[trades_df['Status'] == 'Closed']['Profit/Loss (USD)'].sum()
+        st.write(f"Total Trades: {total_trades}")
+        st.write(f"Total Profit/Loss (Closed Trades): ${total_profit:.2f}")
 
             
 
@@ -832,6 +1039,18 @@ def main():
             best_profitability = profitability_dict[best_timeframe]
             st.markdown(f"**Best Timeframe for Trading:** {best_timeframe}")
             st.markdown(f"**Profitability for Best Timeframe:** {best_profitability:.2f}%")
+
+ 
+
+        # Live update loop
+        while True:
+            price = get_crypto_price(symbol)
+            if price:
+                price_container.metric(label=f"Live Price of {symbol}", value=f"${price:,.4f}")
+            else:
+                price_container.error("Failed to fetch price!")
+            
+            time.sleep(1)  # Update every 1 second
 
 # Run the app
 if __name__ == "__main__":
