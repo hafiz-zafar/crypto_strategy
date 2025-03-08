@@ -103,7 +103,7 @@ def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
 
 # Function to get live crypto price
 def get_crypto_price(symbol):
-    url = f"https://api.binance.us/api/v3/ticker/price?symbol={symbol}"
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
     response = requests.get(url)
     if response.status_code == 200:
         return float(response.json()["price"])
@@ -1024,21 +1024,21 @@ def main():
         display_chart(df,interval)
 
         # Evaluate best timeframe
-        st.markdown("**Evaluating Best Timeframe for Trading**")
-        timeframes = ["1m","3m", "5m", "15m", "30m", "1h", "4h", "1d"]
-        profitability_dict = {}
+        # st.markdown("**Evaluating Best Timeframe for Trading**")
+        # timeframes = ["1m","3m", "5m", "15m", "30m", "1h", "4h", "1d"]
+        # profitability_dict = {}
 
-        for tf in timeframes:
-            df_tf = fetch_data(symbol, tf, limit=limit)
-            if df_tf is not None:
-                df_tf = apply_strategy(df_tf,interval)
-                profitability_dict[tf] = evaluate_profitability(df_tf)
+        # for tf in timeframes:
+        #     df_tf = fetch_data(symbol, tf, limit=limit)
+        #     if df_tf is not None:
+        #         df_tf = apply_strategy(df_tf,interval)
+        #         profitability_dict[tf] = evaluate_profitability(df_tf)
 
-        if profitability_dict:
-            best_timeframe = max(profitability_dict, key=profitability_dict.get)
-            best_profitability = profitability_dict[best_timeframe]
-            st.markdown(f"**Best Timeframe for Trading:** {best_timeframe}")
-            st.markdown(f"**Profitability for Best Timeframe:** {best_profitability:.2f}%")
+        # if profitability_dict:
+        #     best_timeframe = max(profitability_dict, key=profitability_dict.get)
+        #     best_profitability = profitability_dict[best_timeframe]
+        #     st.markdown(f"**Best Timeframe for Trading:** {best_timeframe}")
+        #     st.markdown(f"**Profitability for Best Timeframe:** {best_profitability:.2f}%")
 
  
 
