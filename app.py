@@ -575,7 +575,7 @@ def run_strategy(df,interval):
 
 # Function to evaluate profitability
 def evaluate_profitability(df):
-    initial_investment = 100  # Fixed initial investment
+    initial_investment = 5000  # Fixed initial investment
     df['returns'] = df['close'].pct_change()
     df['strategy_returns'] = df['signal'].shift(1) * df['returns']
     df['cumulative_returns'] = (1 + df['strategy_returns']).cumprod()
