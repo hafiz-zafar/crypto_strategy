@@ -5,6 +5,7 @@ import mplfinance as mpf
 import matplotlib.pyplot as plt
 import requests
 from datetime import datetime
+import pytz
 from dotenv import load_dotenv
 import os
 import tensorflow as tf
@@ -93,9 +94,10 @@ def fetch_data(symbol, interval, limit=500):  # Default limit set to 500
             'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume',
             'taker_buy_quote_asset_volume', 'ignore'
         ])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_localize('UTC').dt.tz_convert('Asia/Dubai').dt.tz_localize(None)
         df.set_index('timestamp', inplace=True)
         df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+        
         return df
     else:
         st.error("Failed to fetch data from Binance API.")
@@ -211,6 +213,7 @@ def get_timeframe_settings(timeframe):
 
 def apply_strategy(df, timeframe):
     # Get timeframe-specific settings
+    
     ema_lengths, macd_params, rsi_length, adx_length, atr_length, volume_ma_window = get_timeframe_settings(timeframe)
     
     # Calculate technical indicators
@@ -407,14 +410,30 @@ def calculate_fibonacci(df, window=30):
         print(f"Error calculating Fibonacci levels: {e}")
     return df
 
+
 # Function to simulate trades and track open trades
+
+
+
+    # Get the RSI column name dynamically
+
 def simulate_trades(df, initial_capital=5000):
     trades = []
     open_trade = None  # Track the currently open trade
     capital = initial_capital  # Starting capital in USD
+        # Calculate Moving Averages and ATR
+    df['MA_9'] = df['close'].rolling(window=9).mean()  # 9-period Moving Average
+    df['MA_21'] = df['close'].rolling(window=21).mean()  # 21-period Moving Average
 
+
+    # Drop rows with NaN values (since indicators like RSI and ATR require a lookback period)
+    df.dropna(inplace=True)
     # Get the RSI column name dynamically
     rsi_column = f"RSI_14"  # Assuming RSI length is 14 (update if different)
+
+    # Add Moving Averages (ensure these are pre-calculated in your DataFrame)
+    short_term_ma = df['MA_9']  # Short-term Moving Average (e.g., 9-period)
+    long_term_ma = df['MA_21']  # Long-term Moving Average (e.g., 21-period)
 
     for i in range(len(df)):
         if open_trade is None:  # No open trade, check for a new signal
@@ -423,6 +442,7 @@ def simulate_trades(df, initial_capital=5000):
                 entry_time = df.index[i]
                 quantity = capital / entry_price  # Calculate quantity of coins bought
                 capital = 0  # All capital is used to buy coins
+                # Fixed SL and TP
                 sl = entry_price * (1 - 0.025)  # 2.5% Stop Loss below entry price
                 tp = entry_price * (1 + 0.05)  # 5% Take Profit above entry price
                 open_trade = {
@@ -444,6 +464,7 @@ def simulate_trades(df, initial_capital=5000):
                 entry_time = df.index[i]
                 quantity = capital / entry_price  # Calculate quantity of coins sold
                 capital = 0  # All capital is used to short sell
+                # Fixed SL and TP
                 sl = entry_price * (1 + 0.025)  # 2.5% Stop Loss above entry price
                 tp = entry_price * (1 - 0.05)  # 5% Take Profit below entry price
                 open_trade = {
@@ -475,10 +496,10 @@ def simulate_trades(df, initial_capital=5000):
                     exit_price = open_trade['TP']
                     exit_reason = 'TP Hit'
                     open_trade['SL'] = None  # SL is not relevant for TP hit
-                # Check for RSI overbought condition (RSI > 70)
-                elif df[rsi_column].iloc[i] > 70:  # Use dynamic RSI column name
+                # Check for RSI overbought condition (RSI > 70) AND MA crossover confirmation
+                elif (df[rsi_column].iloc[i] > 70) and (short_term_ma.iloc[i] < long_term_ma.iloc[i]):
                     exit_price = df['close'].iloc[i]
-                    exit_reason = 'RSI Overbought'
+                    exit_reason = 'RSI Overbought + MA Crossover'
                     open_trade['SL'] = None  # SL is not relevant for RSI exit
                     open_trade['TP'] = None  # TP is not relevant for RSI exit
                 # Check for sell signal
@@ -499,10 +520,10 @@ def simulate_trades(df, initial_capital=5000):
                     exit_price = open_trade['TP']
                     exit_reason = 'TP Hit'
                     open_trade['SL'] = None  # SL is not relevant for TP hit
-                # Check for RSI oversold condition (RSI < 30)
-                elif df[rsi_column].iloc[i] < 30:  # Use dynamic RSI column name
+                # Check for RSI oversold condition (RSI < 30) AND MA crossover confirmation
+                elif (df[rsi_column].iloc[i] < 30) and (short_term_ma.iloc[i] > long_term_ma.iloc[i]):
                     exit_price = df['close'].iloc[i]
-                    exit_reason = 'RSI Oversold'
+                    exit_reason = 'RSI Oversold + MA Crossover'
                     open_trade['SL'] = None  # SL is not relevant for RSI exit
                     open_trade['TP'] = None  # TP is not relevant for RSI exit
                 # Check for buy signal
@@ -880,6 +901,8 @@ def main():
         batch_size = st.slider("Select Batch Size", min_value=8, max_value=64, value=16)
       # Fetch candlestick data
     df = fetch_data(symbol, interval, limit=limit)
+
+
     # 24 hour volume
     volume = fetch_24h_volume(symbol.replace("USDT", "").upper())
     if volume:
@@ -962,6 +985,11 @@ def main():
 
         # Calculate ATR (Average True Range)
         df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)  # ATR with a 14-period lookback
+
+        # Calculate Moving Averages and ATR
+        df['MA_9'] = df['close'].rolling(window=9).mean()  # 9-period Moving Average
+        df['MA_21'] = df['close'].rolling(window=21).mean()  # 21-period Moving Average
+        df['ATR_14'] = ta.atr(df['high'], df['low'], df['close'], length=14)  # 14-period ATR
 
         # Drop rows with NaN values (since indicators like RSI and ATR require a lookback period)
         df.dropna(inplace=True)
@@ -1055,4 +1083,3 @@ def main():
 # Run the app
 if __name__ == "__main__":
     main()
-    
