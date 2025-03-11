@@ -838,6 +838,128 @@ def evaluate_profitability_and_win_rate(df):
 
     return profitability, win_rate
 
+def calculate_emas(df, ema_lengths):
+    # Calculate EMAs for the specified lengths
+    for length in ema_lengths:
+        df[f'EMA_{length}'] = df['close'].ewm(span=length, adjust=False).mean()
+    return df
+
+def calculate_macd(df, fast=12, slow=26, signal=9):
+    # Calculate MACD line, signal line, and histogram
+    df['MACD'] = df['close'].ewm(span=fast, adjust=False).mean() - df['close'].ewm(span=slow, adjust=False).mean()
+    df['MACDs'] = df['MACD'].ewm(span=signal, adjust=False).mean()
+    df['MACDh'] = df['MACD'] - df['MACDs']
+    return df
+
+def calculate_macd(df, fast=12, slow=26, signal=9):
+    # Calculate MACD line, signal line, and histogram
+    df['MACD'] = df['close'].ewm(span=fast, adjust=False).mean() - df['close'].ewm(span=slow, adjust=False).mean()
+    df['MACDs'] = df['MACD'].ewm(span=signal, adjust=False).mean()
+    df['MACDh'] = df['MACD'] - df['MACDs']
+    return df
+
+def get_timeframe_settings1(timeframe):
+    # Define EMA lengths, MACD parameters, and other settings based on the timeframe
+    if timeframe == "15m":
+        ema_lengths = [9, 21, 50]  # Short-term EMAs for 15-minute chart
+        macd_params = (12, 26, 9)  # MACD parameters
+        ema_colors = ['yellow', 'green', 'blue']  # Colors for EMAs
+    elif timeframe == "30m":
+        ema_lengths = [21, 50, 100]  # Medium-term EMAs for 30-minute chart
+        macd_params = (12, 26, 9)
+        ema_colors = ['orange', 'purple', 'red']
+    elif timeframe == "1h":
+        ema_lengths = [50, 100, 200]  # Long-term EMAs for 1-hour chart
+        macd_params = (12, 26, 9)
+        ema_colors = ['cyan', 'magenta', 'lime']
+    elif timeframe == "4h":
+        ema_lengths = [100, 200, 400]  # Very long-term EMAs for 4-hour chart
+        macd_params = (12, 26, 9)
+        ema_colors = ['pink', 'brown', 'gray']
+    else:
+        raise ValueError(f"Unsupported timeframe: {timeframe}. Supported timeframes are '15min', '30min', '1hour', '4hour'.")
+    
+    # Other settings (e.g., RSI, ADX, ATR, Volume MA)
+    rsi_length = 14
+    adx_length = 14
+    atr_length = 14
+    volume_ma_window = 20
+    
+    return ema_lengths, macd_params, rsi_length, adx_length, atr_length, volume_ma_window, ema_colors
+
+def display_chart1(df, timeframe):
+    # Get timeframe-specific settings
+    ema_lengths, macd_params, rsi_length, adx_length, atr_length, volume_ma_window, ema_colors = get_timeframe_settings1(timeframe)
+    
+    # Calculate EMAs and add them to the DataFrame
+    df = calculate_emas(df, ema_lengths)
+    
+    # Calculate MACD and add it to the DataFrame
+    macd_fast, macd_slow, macd_signal = macd_params
+    df = calculate_macd(df, fast=macd_fast, slow=macd_slow, signal=macd_signal)
+    
+    # Dynamically generate EMA column names
+    ema_columns = [f'EMA_{ema_length}' for ema_length in ema_lengths]
+    
+    # Add EMAs to the chart with custom colors
+    apds = []
+    for ema_col, color in zip(ema_columns, ema_colors):
+        apds.append(mpf.make_addplot(df[ema_col], color=color, width=1, panel=0))
+
+    # Add MACD to the chart (optional)
+    apds.append(mpf.make_addplot(df['MACD'], color='purple', width=1, panel=2, ylabel='MACD'))  # MACD line
+    apds.append(mpf.make_addplot(df['MACDs'], color='orange', width=1, panel=2))  # MACD signal line
+    apds.append(mpf.make_addplot(df['MACDh'], type='bar', color='gray', width=0.7, panel=2))  # MACD histogram
+
+    # Create a figure and axis for the candlestick chart
+    fig, axes = mpf.plot(
+        df,
+        type='candle',
+        style='charles',
+        volume=True,  # Add volume subplot
+        addplot=apds,  # Add EMAs and MACD to the chart
+        returnfig=True,
+        figsize=(12, 8),
+        panel_ratios=(4, 1, 1)  # Adjust panel ratios for main chart, volume, and MACD
+    )
+    
+    return fig
+
+def display_multiple_charts(symbol):
+    # Fetch data for all timeframes
+    df_15min = fetch_data(symbol, "15m")
+    df_30min = fetch_data(symbol, "30m")
+    df_1hour = fetch_data(symbol, "1h")
+    df_4hour = fetch_data(symbol, "4h")
+    
+    if df_15min is not None and df_30min is not None and df_1hour is not None and df_4hour is not None:
+        # Create two columns for the first row
+        col1, col2 = st.columns(2)
+        
+        # Display 15-minute and 30-minute charts in the first row
+        with col1:
+            st.write("15-Minute Chart")
+            fig_15min = display_chart1(df_15min, "15m")
+            st.pyplot(fig_15min)
+        
+        with col2:
+            st.write("30-Minute Chart")
+            fig_30min = display_chart1(df_30min, "30m")
+            st.pyplot(fig_30min)
+        
+        # Create two columns for the second row
+        col3, col4 = st.columns(2)
+        
+        # Display 1-hour and 4-hour charts in the second row
+        with col3:
+            st.write("1-Hour Chart")
+            fig_1hour = display_chart1(df_1hour, "1h")
+            st.pyplot(fig_1hour)
+        
+        with col4:
+            st.write("4-Hour Chart")
+            fig_4hour = display_chart1(df_4hour, "4h")
+            st.pyplot(fig_4hour)
 # Main Streamlit app
 def main():
    
@@ -1049,7 +1171,8 @@ def main():
 
         # Display candlestick chart with EMAs
         st.markdown("**Live Candlestick Chart**")
-        display_chart(df,interval)
+        #display_chart(df,interval)
+        display_multiple_charts(symbol)
 
         # Evaluate best timeframe
         # st.markdown("**Evaluating Best Timeframe for Trading**")
