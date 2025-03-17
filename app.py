@@ -961,9 +961,9 @@ def display_multiple_charts(symbol):
 
 # funding rate
 # Binance API endpoints
-FUNDING_RATE_URL = "https://fapi.binance.us/fapi/v1/fundingRate"
-OPEN_INTEREST_URL = "https://fapi.binance.us/fapi/v1/openInterest"
-KLINE_URL = "https://fapi.binance.us/fapi/v1/klines"  # For historical price data
+FUNDING_RATE_URL = "https://fapi.binance.com/fapi/v1/fundingRate"
+OPEN_INTEREST_URL = "https://fapi.binance.com/fapi/v1/openInterest"
+KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"  # For historical price data
 
 # List of specific coins you're interested in
 SPECIFIC_COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
