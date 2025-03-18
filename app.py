@@ -575,6 +575,8 @@ def backtest_strategy(df):
     
     return df
 
+
+
 # Main function to run the strategy
 def run_strategy(df,interval):
     """
@@ -958,137 +960,6 @@ def display_multiple_charts(symbol):
             st.write("4-Hour Chart")
             fig_4hour = display_chart1(df_4hour, "4h")
             st.pyplot(fig_4hour)
-
-# funding rate
-# Binance API endpoints
-FUNDING_RATE_URL = "https://fapi.binance.com/fapi/v1/fundingRate"
-OPEN_INTEREST_URL = "https://fapi.binance.com/fapi/v1/openInterest"
-KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"  # For historical price data
-
-# List of specific coins you're interested in
-SPECIFIC_COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
-
-def fetch_funding_rate(symbol):
-    """Fetch the latest funding rate for a symbol."""
-    response = requests.get(FUNDING_RATE_URL, params={"symbol": symbol, "limit": 1})
-    if response.status_code == 200:
-        funding_rates = response.json()
-        if funding_rates:
-            return float(funding_rates[0]['fundingRate']) * 100  # Convert to percentage
-    return None
-
-def fetch_open_interest(symbol):
-    """Fetch the open interest for a symbol."""
-    response = requests.get(OPEN_INTEREST_URL, params={"symbol": symbol})
-    if response.status_code == 200:
-        return float(response.json()['openInterest'])
-    return None
-
-def fetch_historical_prices(symbol, interval="1h", limit=5):
-    """Fetch historical price data for a symbol."""
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "limit": limit,
-    }
-    response = requests.get(KLINE_URL, params=params)
-    if response.status_code == 200:
-        klines = response.json()
-        # Extract closing prices and volumes from the klines data
-        close_prices = [float(kline[4]) for kline in klines]  # Index 4 is the close price
-        volumes = [float(kline[5]) for kline in klines]  # Index 5 is the volume
-        return close_prices, volumes
-    return None, None
-
-def calculate_long_short_ratio(funding_rate):
-    """Approximate the long/short ratio based on the funding rate."""
-    if funding_rate > 0:
-        # More longs than shorts
-        return 1 + funding_rate  # Simplified approximation
-    else:
-        # More shorts than longs
-        return 1 / (1 + abs(funding_rate))  # Simplified approximation
-
-def calculate_price_trend(prices):
-    """Calculate the price trend (uptrend, downtrend, or sideways)."""
-    if len(prices) < 2:
-        return "sideways"
-    price_changes = np.diff(prices)
-    avg_change = np.mean(price_changes)
-    if avg_change > 0:
-        return "uptrend"
-    elif avg_change < 0:
-        return "downtrend"
-    else:
-        return "sideways"
-
-def provide_insights(symbol, long_short_ratio, funding_rate, price_trend, volume_trend, open_interest):
-    """Provide insights and a clear suggestion (Buy, Sell, or Stay Neutral) based on the data."""
-    if price_trend == "uptrend":
-        if volume_trend == "increasing":
-            if funding_rate > 0.01:  # Positive funding rate
-                insight = "Strong bullish momentum with increasing volume and positive funding. Potential for continued upward movement."
-                suggestion = "**Buy** - The market is in a strong uptrend with healthy funding."
-                color = "green"
-            elif funding_rate < -0.01:  # Slightly negative funding rate
-                insight = "Bullish momentum with increasing volume, but negative funding suggests over-leverage. Risk of a long squeeze."
-                suggestion = "**Buy (Caution)** - Monitor for long squeezes and set stop-loss orders."
-                color = "green"
-            else:  # Neutral funding rate
-                insight = "Bullish momentum with increasing volume and neutral funding. Potential for continued upward movement."
-                suggestion = "**Buy** - The market is in a strong uptrend with neutral funding."
-                color = "green"
-        else:  # Volume decreasing
-            if funding_rate > 0.01:  # Positive funding rate
-                insight = "Bullish trend, but decreasing volume suggests weakening momentum. Positive funding indicates some bullish sentiment."
-                suggestion = "**Stay Neutral** - Wait for confirmation of a stronger trend."
-                color = "gray"
-            elif funding_rate < -0.01:  # Slightly negative funding rate
-                insight = "Bullish trend, but decreasing volume and negative funding suggest caution. Risk of a pullback."
-                suggestion = "**Stay Neutral** - Avoid entering long positions until momentum strengthens."
-                color = "gray"
-            else:  # Neutral funding rate
-                insight = "Bullish trend, but decreasing volume suggests weakening momentum. Funding is neutral."
-                suggestion = "**Stay Neutral** - Wait for confirmation of a stronger trend."
-                color = "gray"
-    elif price_trend == "downtrend":
-        if volume_trend == "increasing":
-            if funding_rate < -0.01:  # Negative funding rate
-                insight = "Strong bearish momentum with increasing volume and negative funding. Potential for continued downward movement."
-                suggestion = "**Sell** - The market is in a strong downtrend with bearish momentum."
-                color = "red"
-            elif funding_rate > 0.01:  # Slightly positive funding rate
-                insight = "Bearish momentum with increasing volume, but positive funding suggests potential for a reversal."
-                suggestion = "**Sell (Caution)** - Monitor for a trend reversal."
-                color = "red"
-            else:  # Neutral funding rate
-                insight = "Bearish momentum with increasing volume and neutral funding. Potential for continued downward movement."
-                suggestion = "**Sell** - The market is in a strong downtrend with neutral funding."
-                color = "red"
-        else:  # Volume decreasing
-            if funding_rate < -0.01:  # Negative funding rate
-                insight = "Bearish trend, but decreasing volume suggests weakening momentum. Negative funding indicates bearish sentiment."
-                suggestion = "**Stay Neutral** - Wait for confirmation of a stronger trend."
-                color = "gray"
-            elif funding_rate > 0.01:  # Slightly positive funding rate
-                insight = "Bearish trend, but decreasing volume and positive funding suggest caution. Risk of a reversal."
-                suggestion = "**Stay Neutral** - Avoid entering short positions until momentum strengthens."
-                color = "gray"
-            else:  # Neutral funding rate
-                insight = "Bearish trend, but decreasing volume suggests weakening momentum. Funding is neutral."
-                suggestion = "**Stay Neutral** - Wait for confirmation of a stronger trend."
-                color = "gray"
-    else:  # Sideways trend
-        if volume_trend == "increasing":
-            insight = "Sideways trend with increasing volume. Wait for a breakout."
-            suggestion = "**Stay Neutral** - The market is consolidating. Wait for a clear breakout."
-            color = "gray"
-        else:  # Volume decreasing
-            insight = "Sideways trend with decreasing volume. Wait for a breakout."
-            suggestion = "**Stay Neutral** - The market is consolidating. Wait for a clear breakout."
-            color = "gray"
-
-    return insight, suggestion, color
 # Main Streamlit app
 def main():
    
@@ -1101,9 +972,6 @@ def main():
         This app fetches live cryptocurrency data from Binance, applies a trading strategy, and evaluates profitability.
         **Explore the market dynamics and make informed trading decisions!**
     """)
-
-
-  
 
     # Fetch market dominance data
     btc_dominance, others_dominance = fetch_market_dominance()
@@ -1125,15 +993,14 @@ def main():
         st.header("⚙️ Settings")
         symbol = st.selectbox("Select Coin", [
             "BTCUSDT", "ETHUSDT", "XRPUSDT", "XLMUSDT", 
-            "TIAUSDT", "IOTAUSDT", "THETAUSDT","TAOUSDT", "NEARUSDT", "HBARUSDT", "ADAUSDT","OMUSDT", 
+            "TIAUSDT", "IOTAUSDT", "THETAUSDT", "NEARUSDT", "HBARUSDT", "ADAUSDT", 
             "MKRUSDT", "TRUMPUSDT", "DOGEUSDT", "FLOKIUSDT", "FILUSDT","SOLUSDT","SUIUSDT",
             "QTUMUSDT","AVAXUSDT","DOTUSDT","FETUSDT","GALAUSDT","TRXUSDT","MANAUSDT","SANDUSDT"
             ,"POLUSDT","OCEANUSDT","LPTUSDT"
         ],index=0)
         interval = st.selectbox("Select Timeframe", ["1m","3m","5m", "15m", "30m", "1h", "4h", "1d"],index=3)
-        st.markdown("**Get Data From Binance based on candles(e.g 500 candles of 15m) below:**")
         limit = st.slider("Select Limit for Data Fetching", min_value=100, max_value=1000, value=500, step=100)
-   
+
         st.markdown("**Evaluating Best Timeframe for Trading**")
         timeframes = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]
         win_rate_dict = {}
@@ -1151,54 +1018,13 @@ def main():
               st.markdown(f"**Best Timeframe for Trading (Highest Win Rate):** {best_timeframe}")
               st.markdown(f"**Win Rate for Best Timeframe:** {best_win_rate:.2f}%")  
 
-        st.markdown("**AI Model Training dataset/batch-size Settings Below:**")
+
         epochs = st.slider("Select Number of Epochs", min_value=10, max_value=200, value=50)
         batch_size = st.slider("Select Batch Size", min_value=8, max_value=64, value=16)
       # Fetch candlestick data
     df = fetch_data(symbol, interval, limit=limit)
 
-    #start
-    st.subheader("Suggestions Market Analysis Futures Long/Short Ratios & Funding Rates & Open Interest")
-    st.markdown("**1-Minute to 5-Minute Chart (Scalping & High-Frequency Trading) 5-8 Candles**")
-    st.markdown("**15-Minute to 30-Minute Chart (Intraday Trading) 3-5 Candles**")
-    st.markdown("**1-Hour to 4-Hour Chart (Swing Trading) 3-6 Candles**")
-    # Create layout with columns (4 parts, using only 1 for the selectbox)
-    col1, col2, col3, col4 = st.columns([1, 3, 3, 3])  # First column takes 1/4 width
 
-    with col1:
-        candles = st.selectbox("Select Candles", ["3","5","6","8","15"],index=1)
-    
-    # Fetch and analyze market data for the selected coin
-    funding_rate = fetch_funding_rate(symbol)
-    open_interest = fetch_open_interest(symbol)
-    prices, volumes = fetch_historical_prices(symbol,interval,candles)
-    
-    if funding_rate is not None and open_interest is not None and prices is not None:
-        long_short_ratio = calculate_long_short_ratio(funding_rate)
-        price_trend = calculate_price_trend(prices)
-        volume_trend = "increasing" if volumes[-1] > volumes[0] else "decreasing"
-        
-        insight, suggestion, color = provide_insights(symbol, long_short_ratio, funding_rate, price_trend, volume_trend, open_interest)
-        
-        # Display the analysis
-        st.write(f"**{symbol}**")
-        st.write(f"- Long/Short Ratio: {long_short_ratio:.2f}")
-        st.write(f"- Funding Rate: {funding_rate:.4f}%")
-        st.write(f"- Open Interest: {open_interest:,.2f}")
-        st.write(f"- Price Trend: {price_trend}")
-        st.write(f"- Volume Trend: {volume_trend}")
-        st.write(f"- Insights: {insight}")
-        
-        # Display suggestion with color coding
-        st.markdown(f"<p style='color:{color}; font-weight:bold;'>{suggestion}</p>", unsafe_allow_html=True)
-    else:
-        st.warning(f"Failed to fetch data for {symbol}. Please try again later.")
-
-#end
-
- 
-
-        
     # 24 hour volume
     volume = fetch_24h_volume(symbol.replace("USDT", "").upper())
     if volume:
@@ -1206,16 +1032,8 @@ def main():
         
     
     
-    st.markdown("""
-    <style>
-    div.stButton > button:first-child {
-        background-color: black;
-        color: white;
-    }
-    </style>
-""", unsafe_allow_html=True)
-    
-    if st.button("AI Predict Price"):
+
+    if st.button("Predict Price"):
         with st.spinner("Predicting in progress..."):
             model_path, scaler_path = train_and_save_model([symbol], [interval], epochs=epochs, batch_size=batch_size)
             predicted_price = predict_price("crypto_gru_model.h5", "crypto_gru_model_scaler.pkl", [symbol], [interval])
@@ -1384,11 +1202,6 @@ def main():
                 price_container.error("Failed to fetch price!")
             
             time.sleep(1)  # Update every 1 second
-
-  
-        
-
-
 
 # Run the app
 if __name__ == "__main__":
